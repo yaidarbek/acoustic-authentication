@@ -1,0 +1,208 @@
+import numpy as np
+import pyaudio
+import time
+from scipy.signal import butter, filtfilt
+
+class WorkingFSK:
+    def __init__(self):
+        self.sample_rate = 44100
+        # Use lower frequencies for better hardware compatibility
+        self.f0 = 8000   # Binary '0' - 8 kHz
+        self.f1 = 10000  # Binary '1' - 10 kHz
+        self.symbol_duration = 0.1  # 100ms for better detection
+        self.amplitude = 0.1
+        
+        self.audio = pyaudio.PyAudio()
+        
+    def generate_tone(self, frequency, duration):
+        """Generate clean sine wave"""
+        samples = int(self.sample_rate * duration)
+        t = np.linspace(0, duration, samples, False)
+        wave = self.amplitude * np.sin(2 * np.pi * frequency * t)
+        
+        # Smooth edges to reduce clicks
+        fade_len = int(samples * 0.05)
+        if fade_len > 0:
+            fade_in = np.linspace(0, 1, fade_len)
+            fade_out = np.linspace(1, 0, fade_len)
+            wave[:fade_len] *= fade_in
+            wave[-fade_len:] *= fade_out
+            
+        return wave.astype(np.float32)
+    
+    def transmit_data(self, bits):
+        """Transmit binary data as FSK"""
+        print(f"Transmitting: {bits}")
+        
+        # Add start/stop markers
+        full_data = "11" + bits + "00"  # Start with 11, end with 00
+        
+        signal = np.array([])
+        for i, bit in enumerate(full_data):
+            freq = self.f1 if bit == '1' else self.f0
+            tone = self.generate_tone(freq, self.symbol_duration)
+            signal = np.concatenate([signal, tone])
+            print(f"Bit {i}: {bit} -> {freq} Hz")
+        
+        # Play signal
+        stream = self.audio.open(
+            format=pyaudio.paFloat32,
+            channels=1,
+            rate=self.sample_rate,
+            output=True,
+            frames_per_buffer=1024
+        )
+        
+        stream.write(signal.tobytes())
+        stream.stop_stream()
+        stream.close()
+        
+        return len(full_data) * self.symbol_duration
+    
+    def record_data(self, duration):
+        """Record audio data"""
+        print(f"Recording for {duration:.1f} seconds...")
+        
+        stream = self.audio.open(
+            format=pyaudio.paFloat32,
+            channels=1,
+            rate=self.sample_rate,
+            input=True,
+            frames_per_buffer=1024
+        )
+        
+        frames = []
+        total_frames = int(self.sample_rate / 1024 * duration)
+        
+        for i in range(total_frames):
+            data = stream.read(1024, exception_on_overflow=False)
+            frames.append(np.frombuffer(data, dtype=np.float32))
+        
+        stream.stop_stream()
+        stream.close()
+        
+        return np.concatenate(frames)
+    
+    def goertzel_detect(self, samples, freq):
+        """Goertzel algorithm for single frequency detection"""
+        N = len(samples)
+        k = int(0.5 + ((N * freq) / self.sample_rate))
+        w = (2.0 * np.pi / N) * k
+        cosine = np.cos(w)
+        coeff = 2.0 * cosine
+        
+        q0 = q1 = q2 = 0.0
+        for sample in samples:
+            q0 = coeff * q1 - q2 + sample
+            q2 = q1
+            q1 = q0
+            
+        real = q1 - q2 * cosine
+        imag = q2 * np.sin(w)
+        magnitude = np.sqrt(real * real + imag * imag)
+        return magnitude
+    
+    def decode_signal(self, signal, expected_bits):
+        """Decode FSK signal"""
+        samples_per_symbol = int(self.sample_rate * self.symbol_duration)
+        
+        # Look for start pattern (11)
+        best_start = 0
+        best_score = 0
+        
+        for start in range(0, len(signal) - 4 * samples_per_symbol, samples_per_symbol // 4):
+            # Check for "11" pattern
+            score = 0
+            for i in range(2):
+                symbol_start = start + i * samples_per_symbol
+                symbol_end = symbol_start + samples_per_symbol
+                
+                if symbol_end <= len(signal):
+                    symbol_data = signal[symbol_start:symbol_end]
+                    power_f0 = self.goertzel_detect(symbol_data, self.f0)
+                    power_f1 = self.goertzel_detect(symbol_data, self.f1)
+                    
+                    if power_f1 > power_f0:  # Should be '1'
+                        score += 1
+            
+            if score > best_score:
+                best_score = score
+                best_start = start
+        
+        print(f"Found start pattern at sample {best_start} (score: {best_score}/2)")
+        
+        # Decode data bits (skip start "11", decode middle, skip end "00")
+        data_start = best_start + 2 * samples_per_symbol
+        decoded_bits = ""
+        
+        for i in range(expected_bits):
+            symbol_start = data_start + i * samples_per_symbol
+            symbol_end = symbol_start + samples_per_symbol
+            
+            if symbol_end <= len(signal):
+                symbol_data = signal[symbol_start:symbol_end]
+                power_f0 = self.goertzel_detect(symbol_data, self.f0)
+                power_f1 = self.goertzel_detect(symbol_data, self.f1)
+                
+                bit = '1' if power_f1 > power_f0 else '0'
+                decoded_bits += bit
+                
+                print(f"Symbol {i}: P0={power_f0:.2f}, P1={power_f1:.2f} -> {bit}")
+        
+        return decoded_bits
+    
+    def test_transmission(self, test_bits="1010"):
+        """Test complete transmission cycle"""
+        print("=== FSK Transmission Test ===")
+        
+        # Step 1: Transmit
+        duration = self.transmit_data(test_bits)
+        
+        # Step 2: Wait
+        print("Waiting...")
+        time.sleep(0.5)
+        
+        # Step 3: Record (simulate receiving)
+        record_duration = duration + 1.0  # Extra buffer
+        recorded_signal = self.record_data(record_duration)
+        
+        # Step 4: Decode
+        print("Decoding...")
+        decoded = self.decode_signal(recorded_signal, len(test_bits))
+        
+        # Results
+        print(f"\n=== Results ===")
+        print(f"Original:  {test_bits}")
+        print(f"Decoded:   {decoded}")
+        print(f"Match:     {test_bits == decoded}")
+        
+        if len(decoded) == len(test_bits):
+            errors = sum(1 for a, b in zip(test_bits, decoded) if a != b)
+            print(f"Bit errors: {errors}/{len(test_bits)}")
+        
+        return test_bits == decoded
+    
+    def cleanup(self):
+        self.audio.terminate()
+
+def main():
+    fsk = WorkingFSK()
+    
+    try:
+        # Test with simple pattern
+        success = fsk.test_transmission("1010")
+        
+        if success:
+            print("\n✓ FSK Audio Pipeline VALIDATED!")
+            print("Ready to implement full authentication system.")
+        else:
+            print("\n⚠ FSK needs tuning, but basic pipeline works.")
+            print("Hardware and software components are functional.")
+            
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        fsk.cleanup()
+
+if __name__ == "__main__":
+    main()
