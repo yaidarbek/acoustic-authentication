@@ -133,6 +133,9 @@ dmypy.json
 .AppleDouble
 .LSOverride
 
+# Runtime files
+used_nonces.json
+
 # Audio files (for testing)
 *.wav
 *.mp3

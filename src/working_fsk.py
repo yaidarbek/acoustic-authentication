@@ -31,19 +31,22 @@ class WorkingFSK:
         return wave.astype(np.float32)
     
     def transmit_data(self, bits):
-        """Transmit binary data as FSK"""
-        print(f"Transmitting: {bits}")
-        
-        # Add start/stop markers
-        full_data = "11" + bits + "00"  # Start with 11, end with 00
-        
-        signal = np.array([])
-        for i, bit in enumerate(full_data):
+        """Transmit binary data as FSK with Barker-7 preamble"""
+        print(f"Transmitting {len(bits)} bits with Barker-7 preamble")
+
+        # Barker-7 preamble: 1=f1, -1=f0
+        barker = [1, 1, 1, -1, -1, 1, -1]
+        preamble_bits = ''.join('1' if c == 1 else '0' for c in barker)
+
+        # Full transmission: preamble + data
+        full_data = preamble_bits + bits
+
+        signal = np.array([], dtype=np.float32)
+        for bit in full_data:
             freq = self.f1 if bit == '1' else self.f0
             tone = self.generate_tone(freq, self.symbol_duration)
             signal = np.concatenate([signal, tone])
-            print(f"Bit {i}: {bit} -> {freq} Hz")
-        
+
         # Play signal
         stream = self.audio.open(
             format=pyaudio.paFloat32,
@@ -52,11 +55,10 @@ class WorkingFSK:
             output=True,
             frames_per_buffer=1024
         )
-        
         stream.write(signal.tobytes())
         stream.stop_stream()
         stream.close()
-        
+
         return len(full_data) * self.symbol_duration
     
     def record_data(self, duration):
@@ -102,53 +104,83 @@ class WorkingFSK:
         magnitude = np.sqrt(real * real + imag * imag)
         return magnitude
     
-    def decode_signal(self, signal, expected_bits):
-        """Decode FSK signal"""
+    def bandpass_filter(self, signal: np.ndarray) -> np.ndarray:
+        """
+        4th-order Butterworth bandpass filter
+        Removes out-of-band noise before demodulation
+        Passband: 7-11 kHz (covers f0=8kHz and f1=10kHz with margin)
+        """
+        nyq = self.sample_rate / 2
+        low = 7000 / nyq
+        high = 11000 / nyq
+        b, a = butter(4, [low, high], btype='band')
+        return filtfilt(b, a, signal).astype(np.float32)
+
+    def apply_agc(self, signal: np.ndarray) -> np.ndarray:
+        """
+        Automatic Gain Control — normalizes signal amplitude
+        Compensates for distance-dependent attenuation
+        Scales signal to [-1, 1] range before Goertzel detection
+        """
+        max_amp = np.max(np.abs(signal))
+        if max_amp > 0:
+            return (signal / max_amp).astype(np.float32)
+        return signal
+
+    def barker_sync(self, signal: np.ndarray) -> int:
+        """
+        Barker-7 sequence synchronization
+        Replaces simple '11' start pattern with cross-correlation
+        Barker-7: [1, 1, 1, -1, -1, 1, -1] — optimal autocorrelation properties
+        Returns sample index of best frame start position
+        """
+        barker = np.array([1, 1, 1, -1, -1, 1, -1], dtype=np.float32)
         samples_per_symbol = int(self.sample_rate * self.symbol_duration)
-        
-        # Look for start pattern (11)
-        best_start = 0
-        best_score = 0
-        
-        for start in range(0, len(signal) - 4 * samples_per_symbol, samples_per_symbol // 4):
-            # Check for "11" pattern
-            score = 0
-            for i in range(2):
-                symbol_start = start + i * samples_per_symbol
-                symbol_end = symbol_start + samples_per_symbol
-                
-                if symbol_end <= len(signal):
-                    symbol_data = signal[symbol_start:symbol_end]
-                    power_f0 = self.goertzel_detect(symbol_data, self.f0)
-                    power_f1 = self.goertzel_detect(symbol_data, self.f1)
-                    
-                    if power_f1 > power_f0:  # Should be '1'
-                        score += 1
-            
-            if score > best_score:
-                best_score = score
-                best_start = start
-        
-        print(f"Found start pattern at sample {best_start} (score: {best_score}/2)")
-        
-        # Decode data bits (skip start "11", decode middle, skip end "00")
-        data_start = best_start + 2 * samples_per_symbol
+
+        # Build reference signal: each Barker chip is one symbol duration
+        reference = np.repeat(barker, samples_per_symbol)
+
+        # Cross-correlate received signal with reference
+        correlation = np.correlate(signal, reference, mode='valid')
+
+        # Best start is the peak of the correlation
+        best_start = int(np.argmax(np.abs(correlation)))
+        return best_start
+
+    def decode_signal(self, signal, expected_bits):
+        """Decode FSK signal with bandpass filter, AGC, and Barker sync"""
+        samples_per_symbol = int(self.sample_rate * self.symbol_duration)
+
+        # Step 1: Bandpass filter — remove out-of-band noise
+        signal = self.bandpass_filter(signal)
+
+        # Step 2: AGC — normalize amplitude for consistent Goertzel detection
+        signal = self.apply_agc(signal)
+
+        # Step 3: Barker-7 sync — find frame start via cross-correlation
+        # Barker preamble is 7 symbols, skip past it to reach data
+        barker_len = 7 * samples_per_symbol
+        best_start = self.barker_sync(signal)
+        data_start = best_start + barker_len
+
+        print(f"Barker sync: frame start at sample {best_start}, data at {data_start}")
+
+        # Step 4: Goertzel demodulation
         decoded_bits = ""
-        
         for i in range(expected_bits):
             symbol_start = data_start + i * samples_per_symbol
             symbol_end = symbol_start + samples_per_symbol
-            
+
             if symbol_end <= len(signal):
                 symbol_data = signal[symbol_start:symbol_end]
                 power_f0 = self.goertzel_detect(symbol_data, self.f0)
                 power_f1 = self.goertzel_detect(symbol_data, self.f1)
-                
+
                 bit = '1' if power_f1 > power_f0 else '0'
                 decoded_bits += bit
-                
+
                 print(f"Symbol {i}: P0={power_f0:.2f}, P1={power_f1:.2f} -> {bit}")
-        
+
         return decoded_bits
     
     def test_transmission(self, test_bits="1010"):

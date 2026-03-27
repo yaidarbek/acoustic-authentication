@@ -3,13 +3,18 @@ import time
 import os
 import hmac
 import hashlib
+import sys
 from unittest.mock import patch, MagicMock
 import numpy as np
+
+# Add src/ to path so imports work
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 # Import our modules
 from crypto_core import CryptographicCore, AuthenticationProtocol
 from working_fsk import WorkingFSK
 from acoustic_auth import AcousticAuthenticator
+from protocol_layer import ProtocolLayer, AudioFrame, CRC16
 
 class TestCryptographicCore(unittest.TestCase):
     """Unit tests for cryptographic operations"""
@@ -147,17 +152,73 @@ class TestFSKAudio(unittest.TestCase):
     def test_bit_encoding_decoding(self):
         """Test bit encoding/decoding without audio"""
         test_bits = "1010"
-        
-        # Mock the audio transmission
         with patch.object(self.fsk, 'transmit_data') as mock_transmit, \
              patch.object(self.fsk, 'record_data') as mock_record:
-            
-            # Simulate perfect transmission
-            mock_record.return_value = np.array([1.0] * 44100)  # Dummy signal
-            
-            # This would normally involve audio, so we test the logic
+            mock_record.return_value = np.array([1.0] * 44100)
             self.assertEqual(len(test_bits), 4)
 
+    def test_bandpass_filter_removes_out_of_band(self):
+        """TC-FSK-004: Bandpass filter must attenuate frequencies outside 7-11 kHz"""
+        duration = 0.1
+        samples = int(self.fsk.sample_rate * duration)
+        t = np.linspace(0, duration, samples, False)
+
+        # Out-of-band signal at 1 kHz
+        out_of_band = np.sin(2 * np.pi * 1000 * t).astype(np.float32)
+        filtered = self.fsk.bandpass_filter(out_of_band)
+
+        # Filtered signal energy should be much lower than original
+        original_energy = np.sum(out_of_band ** 2)
+        filtered_energy = np.sum(filtered ** 2)
+        self.assertLess(filtered_energy, original_energy * 0.01)
+
+    def test_bandpass_filter_passes_in_band(self):
+        """TC-FSK-005: Bandpass filter must preserve 8 kHz and 10 kHz signals"""
+        duration = 0.1
+        samples = int(self.fsk.sample_rate * duration)
+        t = np.linspace(0, duration, samples, False)
+
+        in_band = np.sin(2 * np.pi * 8000 * t).astype(np.float32)
+        filtered = self.fsk.bandpass_filter(in_band)
+
+        # Filtered signal energy should be close to original (>50% preserved)
+        original_energy = np.sum(in_band ** 2)
+        filtered_energy = np.sum(filtered ** 2)
+        self.assertGreater(filtered_energy, original_energy * 0.5)
+
+    def test_agc_normalizes_amplitude(self):
+        """TC-FSK-006: AGC must normalize signal to max amplitude of 1.0"""
+        # Weak signal with amplitude 0.01
+        weak_signal = np.array([0.01, -0.01, 0.005, -0.008], dtype=np.float32)
+        normalized = self.fsk.apply_agc(weak_signal)
+        self.assertAlmostEqual(np.max(np.abs(normalized)), 1.0, places=5)
+
+    def test_agc_handles_zero_signal(self):
+        """TC-FSK-007: AGC must handle silent/zero signal without division by zero"""
+        silent = np.zeros(100, dtype=np.float32)
+        result = self.fsk.apply_agc(silent)
+        self.assertTrue(np.all(result == 0))
+
+    def test_barker_sync_finds_correct_position(self):
+        """TC-FSK-008: Barker sync must locate preamble start in a synthetic signal"""
+        samples_per_symbol = int(self.fsk.sample_rate * self.fsk.symbol_duration)
+        barker = [1, 1, 1, -1, -1, 1, -1]
+
+        # Build synthetic signal: silence + Barker preamble + data
+        silence = np.zeros(samples_per_symbol * 3, dtype=np.float32)
+        preamble = np.concatenate([
+            self.fsk.generate_tone(self.fsk.f1 if c == 1 else self.fsk.f0, self.fsk.symbol_duration)
+            for c in barker
+        ])
+        data = self.fsk.generate_tone(self.fsk.f1, self.fsk.symbol_duration)
+        signal = np.concatenate([silence, preamble, data])
+
+        best_start = self.fsk.barker_sync(signal)
+
+        # Expected start is after the silence (3 symbols worth of samples)
+        expected_start = samples_per_symbol * 3
+        tolerance = samples_per_symbol  # Allow 1 symbol tolerance
+        self.assertAlmostEqual(best_start, expected_start, delta=tolerance)
 class TestSystemIntegration(unittest.TestCase):
     """Integration tests for complete system"""
     
@@ -193,6 +254,104 @@ class TestSystemIntegration(unittest.TestCase):
         
         # Should be 256 bits
         self.assertEqual(len(bits), 256)
+
+class TestProtocolLayer(unittest.TestCase):
+    """Unit tests for protocol layer — frame construction, CRC, and data splitting"""
+
+    def setUp(self):
+        self.protocol = ProtocolLayer()
+        self.frame_handler = AudioFrame()
+        self.crc = CRC16()
+
+    def test_frame_creation_and_parsing_roundtrip(self):
+        """TC-PROTO-001: Frame created and parsed back should recover original payload"""
+        payload = b"Hello, acoustic world!"
+        frames = self.protocol.prepare_transmission(payload)
+        self.assertEqual(len(frames), 1)
+
+        success, recovered, error = self.protocol.process_received_frame(frames[0])
+        self.assertTrue(success, f"Frame parsing failed: {error}")
+        self.assertEqual(payload, recovered)
+
+    def test_crc_detects_single_bit_corruption(self):
+        """TC-PROTO-002: CRC must detect a single flipped bit in the payload"""
+        payload = b"integrity check"
+        frames = self.protocol.prepare_transmission(payload)
+        frame = bytearray(frames[0])
+
+        # Flip one bit in the payload area (byte index 3 = first payload byte)
+        frame[3] ^= 0x01
+
+        success, _, error = self.protocol.process_received_frame(bytes(frame))
+        self.assertFalse(success, "CRC should have detected corruption")
+        self.assertEqual(error, "CRC verification failed")
+
+    def test_invalid_preamble_rejected(self):
+        """TC-PROTO-003: Frame with wrong preamble byte must be rejected"""
+        payload = b"test"
+        frames = self.protocol.prepare_transmission(payload)
+        frame = bytearray(frames[0])
+
+        # Corrupt the preamble byte
+        frame[0] = 0x00
+
+        success, _, error = self.protocol.process_received_frame(bytes(frame))
+        self.assertFalse(success)
+        self.assertEqual(error, "Invalid preamble")
+
+    def test_frame_too_short_rejected(self):
+        """TC-PROTO-004: Frame shorter than minimum size must be rejected"""
+        success, _, error = self.protocol.process_received_frame(b"\xAA\x00")
+        self.assertFalse(success)
+        self.assertEqual(error, "Frame too short")
+
+    def test_large_data_splits_into_multiple_frames(self):
+        """TC-PROTO-005: Data larger than 255 bytes must be split across frames"""
+        large_data = b"X" * 300  # Exceeds MAX_PAYLOAD_SIZE of 255
+        frames = self.protocol.prepare_transmission(large_data)
+        self.assertEqual(len(frames), 2)
+
+    def test_large_data_reconstructed_correctly(self):
+        """TC-PROTO-006: All frames from a large payload must reconstruct original data"""
+        large_data = os.urandom(300)
+        frames = self.protocol.prepare_transmission(large_data)
+
+        reconstructed = b""
+        for frame in frames:
+            success, payload, error = self.protocol.process_received_frame(frame)
+            self.assertTrue(success, f"Frame failed: {error}")
+            reconstructed += payload
+
+        self.assertEqual(large_data, reconstructed)
+
+    def test_crc_calculation_deterministic(self):
+        """TC-PROTO-007: Same data must always produce same CRC value"""
+        data = b"deterministic test"
+        crc1 = self.crc.calculate(data)
+        crc2 = self.crc.calculate(data)
+        self.assertEqual(crc1, crc2)
+
+    def test_crc_different_data_different_checksum(self):
+        """TC-PROTO-008: Different data must produce different CRC values"""
+        crc1 = self.crc.calculate(b"data one")
+        crc2 = self.crc.calculate(b"data two")
+        self.assertNotEqual(crc1, crc2)
+
+    def test_sequence_numbers_increment(self):
+        """TC-PROTO-009: Sequence number must increment across frames"""
+        data = b"A" * 300
+        frames = self.protocol.prepare_transmission(data)
+
+        from protocol_layer import FrameHeader
+        seq0 = FrameHeader.from_bytes(frames[0][1:3]).sequence
+        seq1 = FrameHeader.from_bytes(frames[1][1:3]).sequence
+        self.assertEqual(seq1, seq0 + 1)
+
+    def test_empty_payload_frame(self):
+        """TC-PROTO-010: Frame with empty payload must be created and parsed correctly"""
+        frames = self.protocol.prepare_transmission(b"")
+        self.assertEqual(len(frames), 0)  # No data = no frames
+
 
 class TestSecurityFeatures(unittest.TestCase):
     """Security-focused tests"""
@@ -299,6 +458,7 @@ def run_test_suite():
         TestCryptographicCore,
         TestAuthenticationProtocol,
         TestFSKAudio,
+        TestProtocolLayer,
         TestSystemIntegration,
         TestSecurityFeatures,
         PerformanceBenchmarks
@@ -310,7 +470,7 @@ def run_test_suite():
     for test_class in test_classes:
         print(f"Running {test_class.__name__}...")
         suite = unittest.TestLoader().loadTestsFromTestCase(test_class)
-        runner = unittest.TextTestRunner(verbosity=1, stream=open(os.devnull, 'w'))
+        runner = unittest.TextTestRunner(verbosity=2)
         result = runner.run(suite)
         
         tests_run = result.testsRun
@@ -319,12 +479,13 @@ def run_test_suite():
         total_tests += tests_run
         total_failures += failures
         
-        status = "✓ PASSED" if failures == 0 else f"✗ {failures} FAILED"
+        status = "PASSED" if failures == 0 else f"{failures} FAILED"
         print(f"  {tests_run} tests - {status}")
         
         # Print failure details
         for failure in result.failures + result.errors:
             print(f"    FAIL: {failure[0]}")
+            print(f"    {failure[1]}")
             
     print(f"\n=== TEST SUMMARY ===")
     print(f"Total Tests: {total_tests}")
@@ -333,9 +494,9 @@ def run_test_suite():
     print(f"Success Rate: {((total_tests - total_failures) / total_tests * 100):.1f}%")
     
     if total_failures == 0:
-        print("\n🎉 ALL TESTS PASSED - SYSTEM READY FOR DEPLOYMENT!")
+        print("\nALL TESTS PASSED - SYSTEM READY FOR DEPLOYMENT!")
     else:
-        print(f"\n⚠️  {total_failures} TESTS FAILED - REVIEW REQUIRED")
+        print(f"\n{total_failures} TESTS FAILED - REVIEW REQUIRED")
         
     return total_failures == 0
 

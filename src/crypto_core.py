@@ -3,7 +3,10 @@ import hmac
 import hashlib
 import secrets
 import time
+import json
 from typing import Optional, Tuple
+
+NONCE_LOG_FILE = 'used_nonces.json'
 
 class CryptographicCore:
     """
@@ -15,11 +18,26 @@ class CryptographicCore:
         # Use provided key or generate new one
         self.shared_key = shared_key or self._generate_shared_key()
         self.challenge_size = 16  # 128-bit nonce
-        self.used_challenges = set()  # Replay attack prevention
+        self.used_challenges = self._load_used_challenges()  # Persistent replay attack prevention
         
     def _generate_shared_key(self) -> bytes:
         """Generate cryptographically secure shared key"""
         return secrets.token_bytes(32)  # 256-bit key
+
+    def _load_used_challenges(self) -> set:
+        """Load persisted used challenges from disk to survive restarts"""
+        if os.path.exists(NONCE_LOG_FILE):
+            try:
+                with open(NONCE_LOG_FILE, 'r') as f:
+                    return set(bytes.fromhex(h) for h in json.load(f))
+            except (json.JSONDecodeError, ValueError):
+                return set()
+        return set()
+
+    def _save_used_challenges(self) -> None:
+        """Persist used challenges to disk"""
+        with open(NONCE_LOG_FILE, 'w') as f:
+            json.dump([c.hex() for c in self.used_challenges], f)
     
     def generate_challenge(self) -> bytes:
         """
@@ -33,6 +51,7 @@ class CryptographicCore:
             challenge = os.urandom(self.challenge_size)
             
         self.used_challenges.add(challenge)
+        self._save_used_challenges()
         return challenge
     
     def compute_response(self, challenge: bytes) -> bytes:
@@ -138,9 +157,9 @@ class AuthenticationProtocol:
         success = self.crypto.verify_response(self.current_challenge, received_response)
         
         if success:
-            print("✓ Authentication SUCCESSFUL")
+            print("[OK] Authentication SUCCESSFUL")
         else:
-            print("✗ Authentication FAILED")
+            print("[FAIL] Authentication FAILED")
             
         # Clear session
         self.current_challenge = None
