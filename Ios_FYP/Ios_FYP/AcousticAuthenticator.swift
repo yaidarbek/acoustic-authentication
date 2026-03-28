@@ -148,10 +148,10 @@ class AcousticAuthenticator: ObservableObject {
     
     /// Listen for READY tone from laptop (12 kHz)
     private func listenForReadyTone() async throws {
-        let duration = 10.0  // Listen for up to 10 seconds
+        let duration = 10.0
         let samples = try await recordTone(duration: duration)
-        
-        let detected = fskDecoder.detectTone(frequency: readyToneFreq, in: samples, threshold: 3.0)
+        let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
+        let detected = fskDecoder.detectTone(frequency: readyToneFreq, in: samples, threshold: 3.0, actualSampleRate: actualRate)
         if !detected {
             throw AuthError.decodingFailed("READY tone not detected - ensure laptop is transmitting")
         }
@@ -187,11 +187,12 @@ class AcousticAuthenticator: ObservableObject {
             Task { @MainActor in
                 do {
                     let session = AVAudioSession.sharedInstance()
-                    try session.setCategory(.record, mode: .measurement, options: [])
+                    try session.setCategory(.record, mode: .default, options: [])
                     try session.setActive(true)
                     
                     let inputNode = self.recordingEngine.inputNode
                     let inputFormat = inputNode.outputFormat(forBus: 0)
+                    print("[AcousticAuth] recordTone input format: \(inputFormat.sampleRate) Hz")
                     let totalSamples = Int(inputFormat.sampleRate * duration)
                     
                     var samples: [Float] = []

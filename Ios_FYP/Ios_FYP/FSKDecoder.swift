@@ -27,9 +27,10 @@ class FSKDecoder {
     /// Compute signal power at a specific frequency using Goertzel algorithm
     /// More efficient than FFT for detecting two specific frequencies
     /// Mirrors: working_fsk.py WorkingFSK.goertzel_detect()
-    func goertzelDetect(samples: [Float], frequency: Double) -> Double {
+    func goertzelDetect(samples: [Float], frequency: Double, actualSampleRate: Double? = nil) -> Double {
         let N = samples.count
-        let k = Int(0.5 + (Double(N) * frequency / sampleRate))
+        let rate = actualSampleRate ?? sampleRate
+        let k = Int(0.5 + (Double(N) * frequency / rate))
         let w = (2.0 * Double.pi / Double(N)) * Double(k)
         let cosine = cos(w)
         let coeff = 2.0 * cosine
@@ -207,8 +208,8 @@ class FSKDecoder {
     /// Detect presence of a specific frequency tone in signal
     /// Used for READY/ACK/NACK detection
     /// Returns true if tone power exceeds threshold
-    func detectTone(frequency: Double, in signal: [Float], threshold: Double = 100.0) -> Bool {
-        let power = goertzelDetect(samples: signal, frequency: frequency)
+    func detectTone(frequency: Double, in signal: [Float], threshold: Double = 100.0, actualSampleRate: Double? = nil) -> Bool {
+        let power = goertzelDetect(samples: signal, frequency: frequency, actualSampleRate: actualSampleRate ?? sampleRate)
         print("[FSKDecoder] Tone detection at \(Int(frequency))Hz: power=\(String(format: "%.2f", power)), threshold=\(threshold)")
         return power > threshold
     }
