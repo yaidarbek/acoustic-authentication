@@ -171,6 +171,8 @@ struct ContentView: View {
         case .idle:                  return "Idle — ready to authenticate"
         case .listeningReady:        return "Listening for READY tone..."
         case .sendingAck:            return "Sending ACK — connecting..."
+        case .listeningAckAck:       return "Waiting for ACK-ACK..."
+        case .sendingRTS:            return "Sending RTS — preparing to receive..."
         case .listening:             return "Listening for challenge..."
         case .decoding:              return "Decoding FSK signal..."
         case .computing:             return "Computing HMAC response..."
@@ -186,6 +188,8 @@ struct ContentView: View {
         case .idle:                  return Color(hex: "#6c7086")
         case .listeningReady,
              .sendingAck,
+             .listeningAckAck,
+             .sendingRTS,
              .listening,
              .decoding,
              .computing,
@@ -198,9 +202,10 @@ struct ContentView: View {
 
     private var isActive: Bool {
         switch authenticator.state {
-        case .listeningReady, .sendingAck, .listening, .decoding, .computing, .transmitting, .listeningConfirmation: 
+        case .listeningReady, .sendingAck, .listeningAckAck, .sendingRTS,
+             .listening, .decoding, .computing, .transmitting, .listeningConfirmation:
             return true
-        default: 
+        default:
             return false
         }
     }
