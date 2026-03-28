@@ -208,8 +208,7 @@ class FSKDecoder {
     /// Used for READY/ACK/NACK detection
     /// Returns true if tone power exceeds threshold
     func detectTone(frequency: Double, in signal: [Float], threshold: Double = 100.0) -> Bool {
-        let normalized = applyAGC(samples: signal)
-        let power = goertzelDetect(samples: normalized, frequency: frequency)
+        let power = goertzelDetect(samples: signal, frequency: frequency)
         print("[FSKDecoder] Tone detection at \(Int(frequency))Hz: power=\(String(format: "%.2f", power)), threshold=\(threshold)")
         return power > threshold
     }

@@ -151,7 +151,7 @@ class AcousticAuthenticator: ObservableObject {
         let duration = 10.0  // Listen for up to 10 seconds
         let samples = try await recordTone(duration: duration)
         
-        let detected = fskDecoder.detectTone(frequency: readyToneFreq, in: samples, threshold: 50.0)
+        let detected = fskDecoder.detectTone(frequency: readyToneFreq, in: samples, threshold: 3.0)
         if !detected {
             throw AuthError.decodingFailed("READY tone not detected - ensure laptop is transmitting")
         }
