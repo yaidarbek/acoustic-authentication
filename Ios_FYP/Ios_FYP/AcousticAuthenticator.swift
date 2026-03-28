@@ -94,6 +94,9 @@ class AcousticAuthenticator: ObservableObject {
             try await sendAckTone()
             log("✅ ACK sent, connection established")
             
+            // Brief pause to let laptop finish handshake and prepare challenge
+            try await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
+            
             // Step 3: Listen for challenge
             updateState(.listening)
             log("🎧 Listening for acoustic challenge...")
@@ -280,14 +283,13 @@ class AcousticAuthenticator: ObservableObject {
                     let inputFormat = inputNode.outputFormat(forBus: 0)
                     self.log("🎶 Input format: \(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch")
 
-                    // Calculate recording duration using the ACTUAL sample rate
-                    // Protocol frame structure: preamble(1) + type(1) + seq(1) + length(1) + payload(16) + CRC(2) = 21 bytes
-                    let protocolOverhead = 5  // preamble + type + seq + length + CRC bytes
+                    // Calculate recording duration using ACTUAL hardware sample rate
+                    let protocolOverhead = 5
                     let totalBytes = self.challengeSizeBytes + protocolOverhead
-                    let totalSymbols = totalBytes * 8 + 7  // data bits + Barker-7 preamble
+                    let totalSymbols = totalBytes * 8 + 7
                     let dataDuration = Double(totalSymbols) * self.fskDecoder.symbolDuration
-                    let duration = dataDuration + 3.0  // Add 3s buffer for finding sync
-                    let totalSamples = Int(inputFormat.sampleRate * duration)  // Use ACTUAL sample rate
+                    let duration = dataDuration + 3.0
+                    let totalSamples = Int(inputFormat.sampleRate * duration)  // at hardware rate
                     
                     self.log("⏱️ Recording duration: \(String(format: "%.1f", duration))s (\(totalSamples) samples at \(inputFormat.sampleRate)Hz)")
                     self.log("📊 Expecting \(totalSymbols) symbols (\(totalBytes) bytes with protocol overhead)")
@@ -305,17 +307,7 @@ class AcousticAuthenticator: ObservableObject {
                         guard let channelData = buffer.floatChannelData?[0] else { return }
                         let frameCount = Int(buffer.frameLength)
                         
-                        // Resample if needed
-                        let sampleRateRatio = self.fskDecoder.sampleRate / inputFormat.sampleRate
-                        if abs(sampleRateRatio - 1.0) < 0.01 {
-                            // Sample rates are close enough, use directly
-                            samples.append(contentsOf: UnsafeBufferPointer(start: channelData, count: frameCount))
-                        } else {
-                            // Simple resampling
-                            for i in 0..<frameCount {
-                                samples.append(channelData[i])
-                            }
-                        }
+                        samples.append(contentsOf: UnsafeBufferPointer(start: channelData, count: frameCount))
                         
                         // Log progress every 20000 samples
                         if samples.count % 20000 < frameCount {
@@ -333,7 +325,10 @@ class AcousticAuthenticator: ObservableObject {
                             self.recordingEngine.inputNode.removeTap(onBus: 0)
                             self.recordingEngine.stop()
                             try? session.setActive(false, options: [])
-                            continuation.resume(returning: Array(samples.prefix(totalSamples)))
+                            // Resample from hardware rate to FSKDecoder rate if needed
+                            let collected = Array(samples.prefix(totalSamples))
+                            let resampled = self.resample(collected, fromRate: inputFormat.sampleRate, toRate: self.fskDecoder.sampleRate)
+                            continuation.resume(returning: resampled)
                         }
                     }
                     
@@ -352,7 +347,8 @@ class AcousticAuthenticator: ObservableObject {
                                 try? session.setActive(false, options: [])
                             }
                             self.log("✅ Collected \(samples.count) samples before timeout")
-                            continuation.resume(returning: samples)
+                            let resampled = self.resample(samples, fromRate: inputFormat.sampleRate, toRate: self.fskDecoder.sampleRate)
+                            continuation.resume(returning: resampled)
                         }
                     }
 
@@ -493,6 +489,21 @@ class AcousticAuthenticator: ObservableObject {
         DispatchQueue.main.async {
             self.logMessages.append(message)  // Show in iPhone UI
         }
+    }
+
+    private func resample(_ samples: [Float], fromRate: Double, toRate: Double) -> [Float] {
+        guard abs(fromRate - toRate) > 1.0 else { return samples }
+        let ratio = toRate / fromRate
+        let outputCount = Int(Double(samples.count) * ratio)
+        var output = [Float](repeating: 0, count: outputCount)
+        for i in 0..<outputCount {
+            let srcIndex = Double(i) / ratio
+            let lo = Int(srcIndex)
+            let hi = min(lo + 1, samples.count - 1)
+            let frac = Float(srcIndex - Double(lo))
+            output[i] = samples[lo] * (1.0 - frac) + samples[hi] * frac
+        }
+        return output
     }
 
     private func stopAudioEngine() {
