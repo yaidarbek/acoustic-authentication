@@ -25,10 +25,13 @@ class AcousticAuthenticator:
         self.auth_protocol.session_timeout = 60  # 60 seconds for testing
         
         # Handshaking tone frequencies
-        self.READY_FREQ = 12000.0  # 12 kHz - READY from laptop
-        self.ACK_FREQ = 14000.0    # 14 kHz - ACK from iPhone
-        self.NACK_FREQ = 6000.0    # 6 kHz - NACK from laptop
-        self.TONE_DURATION = 0.5   # 0.5 seconds
+        self.READY_FREQ = 12000.0   # 12 kHz - READY from laptop
+        self.ACK_FREQ = 14000.0     # 14 kHz - ACK from iPhone
+        self.ACKACK_FREQ = 16000.0  # 16 kHz - ACK-ACK from laptop
+        self.RTS_FREQ = 3000.0      # 3 kHz - Ready-To-Receive from iPhone
+        self.NACK_FREQ = 6000.0     # 6 kHz - NACK from laptop
+        self.TONE_DURATION = 0.5    # 0.5 seconds
+        self.RTS_DURATION = 2.0     # 2 seconds - long enough for reliable detection
         self.SUCCESS_TONE_DURATION = 1.0  # 1 second for final ACK/NACK
 
     def bytes_to_bits(self, data: bytes) -> str:
@@ -53,7 +56,7 @@ class AcousticAuthenticator:
         """Laptop: Listen for ACK tone from iPhone"""
         print(f"👂 Listening for ACK tone ({timeout}s timeout)...")
         signal = self.tone_utils.record_audio(timeout)
-        detected = self.tone_utils.detect_tone(signal, self.ACK_FREQ, threshold=50.0)
+        detected = self.tone_utils.detect_tone(signal, self.ACK_FREQ, threshold=10.0)
         
         if detected:
             print("✅ ACK tone detected - iPhone connected")
@@ -62,6 +65,25 @@ class AcousticAuthenticator:
             print("❌ ACK tone not detected")
             return False
     
+    def send_ackack_tone(self):
+        """Laptop: Send ACK-ACK tone (16 kHz) to confirm ACK received, signals iPhone to start recording"""
+        print("📡 Sending ACK-ACK tone (16 kHz) - starting challenge now...")
+        self.tone_utils.play_tone(self.ACKACK_FREQ, self.TONE_DURATION)
+        print("✅ ACK-ACK sent")
+
+    def listen_for_rts(self):
+        """Laptop: Listen for Ready-To-Receive tone from iPhone (3 kHz)"""
+        print("👂 Listening for RTS tone from iPhone (3 kHz)...")
+        signal = self.tone_utils.record_audio(15.0)
+        detected = self.tone_utils.detect_tone(signal, self.RTS_FREQ, threshold=10.0)
+        if detected:
+            print("✅ RTS tone detected - iPhone is ready, waiting 2.5s before sending challenge...")
+            time.sleep(2.5)  # Must be >= RTS duration (2s) + iPhone session switch time
+            return True
+        else:
+            print("❌ RTS tone not detected")
+            return False
+
     def send_ack_tone(self):
         """Laptop: Send ACK tone (success)"""
         print("📡 Sending ACK tone (authentication successful)...")
@@ -178,8 +200,13 @@ class AcousticAuthenticator:
                 self.send_ready_tone()
                 time.sleep(0.5)  # Brief pause
                 
-                if self.listen_for_ack(timeout=2.0):
+                if self.listen_for_ack(timeout=12.0):
                     connected = True
+                    self.send_ackack_tone()
+                    if not self.listen_for_rts():
+                        print("❌ iPhone did not send RTS, retrying...")
+                        connected = False
+                        continue
                     break
                     
                 print("No ACK received, retrying...")

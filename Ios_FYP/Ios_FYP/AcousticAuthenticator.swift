@@ -7,6 +7,8 @@ enum AuthState {
     case idle
     case listeningReady      // Listening for READY tone from laptop
     case sendingAck          // Sending ACK tone to laptop
+    case listeningAckAck     // Waiting for ACK-ACK from laptop
+    case sendingRTS          // Sending Ready-To-Receive tone to laptop
     case listening           // Listening for challenge
     case decoding
     case computing
@@ -44,8 +46,12 @@ class AcousticAuthenticator: ObservableObject {
     // Handshaking tones
     private let readyToneFreq: Double = 12000.0   // 12 kHz - READY from laptop
     private let ackToneFreq: Double = 14000.0     // 14 kHz - ACK to laptop
+    private let ackAckToneFreq: Double = 16000.0  // 16 kHz - ACK-ACK from laptop
+    private let rtsToneFreq: Double = 3000.0      // 3 kHz - Ready-To-Receive to laptop
     private let nackToneFreq: Double = 6000.0     // 6 kHz - NACK from laptop
     private let toneDuration: Double = 0.5        // 0.5 seconds
+    private let ackToneDuration: Double = 2.0     // 2 seconds - long for reliable detection
+    private let rtsToneDuration: Double = 2.0     // 2 seconds - long for reliable detection
     private let successToneDuration: Double = 1.0 // 1 second for final ACK/NACK
 
     // MARK: - Init
@@ -94,10 +100,18 @@ class AcousticAuthenticator: ObservableObject {
             try await sendAckTone()
             log("✅ ACK sent, connection established")
             
-            // Brief pause to let laptop finish handshake and prepare challenge
-            try await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
+            // Step 3: Wait for ACK-ACK from laptop (confirms it heard our ACK and is starting challenge)
+            log("👂 Waiting for ACK-ACK from laptop (16 kHz)...")
+            try await listenForAckAck()
+            log("✅ ACK-ACK received - laptop is sending challenge now")
             
-            // Step 3: Listen for challenge
+            // Step 4: Send RTS tone - signals laptop we are ready to receive FSK challenge
+            updateState(.sendingRTS)
+            log("📡 Sending RTS tone (3 kHz, 2s) - setting up recording session...")
+            try await sendRTSTone()
+            log("✅ RTS sent - laptop will start FSK challenge in ~0.5s")
+            
+            // Step 5: Listen for challenge
             updateState(.listening)
             log("🎧 Listening for acoustic challenge...")
             let audioData = try await recordAudio()
@@ -160,12 +174,32 @@ class AcousticAuthenticator: ObservableObject {
         }
     }
     
-    /// Send ACK tone to laptop (14 kHz)
+    /// Send ACK tone to laptop (14 kHz, 2s)
     private func sendAckTone() async throws {
-        let tone = fskDecoder.generateTone(frequency: ackToneFreq, duration: toneDuration)
+        let tone = fskDecoder.generateTone(frequency: ackToneFreq, duration: ackToneDuration)
         try await playSignal(tone)
     }
     
+    /// Listen for ACK-ACK tone from laptop (16 kHz)
+    /// This confirms laptop heard our ACK and is about to send the FSK challenge
+    private func listenForAckAck() async throws {
+        updateState(.listeningAckAck)
+        let samples = try await recordTone(duration: 15.0)
+        let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
+        let detected = fskDecoder.detectTone(frequency: ackAckToneFreq, in: samples, threshold: 3.0, actualSampleRate: actualRate)
+        if !detected {
+            throw AuthError.decodingFailed("ACK-ACK tone not detected - laptop did not confirm")
+        }
+    }
+    
+    /// Send Ready-To-Receive tone to laptop (3 kHz, 2s)
+    /// Played after recording session is fully set up
+    /// Laptop waits 2.5s after detecting this before sending FSK challenge
+    private func sendRTSTone() async throws {
+        let tone = fskDecoder.generateTone(frequency: rtsToneFreq, duration: rtsToneDuration)
+        try await playSignal(tone)
+    }
+
     /// Listen for ACK (12 kHz) or NACK (6 kHz) from laptop
     /// Returns true if ACK, false if NACK
     private func listenForConfirmation() async throws -> Bool {
@@ -475,6 +509,10 @@ class AcousticAuthenticator: ObservableObject {
             print("[AcousticAuth] STATE: Computing")
         case .transmitting:
             print("[AcousticAuth] STATE: Transmitting")
+        case .sendingRTS:
+            print("[AcousticAuth] STATE: Sending RTS")
+        case .listeningAckAck:
+            print("[AcousticAuth] STATE: Listening for ACK-ACK")
         case .listeningConfirmation:
             print("[AcousticAuth] STATE: Listening for Confirmation")
         case .authenticated:
