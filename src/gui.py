@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, font
+from tkinter import ttk, font, filedialog, messagebox
 import threading
 import sys
 import os
@@ -7,6 +7,7 @@ import os
 # Add src/ to path when running from anywhere
 sys.path.insert(0, os.path.dirname(__file__))
 from acoustic_auth import AcousticAuthenticator
+from secure_storage import SecureStorage
 
 # --- Colours ---
 BG          = "#1e1e2e"
@@ -25,11 +26,16 @@ class AuthGUI:
         self.root = root
         self.root.title("Acoustic Authentication System")
         self.root.configure(bg=BG)
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
 
         self.authenticator = None
+        self.storage = None
+        self.authenticated = False
+        self.auth_running = False
+        self.stop_requested = False
         self._build_ui()
         self._set_status("idle")
+        self._update_storage_state()
 
     # ------------------------------------------------------------------
     # UI Construction
@@ -89,7 +95,7 @@ class AuthGUI:
                  bg=PANEL, fg=SUBTLE).pack(anchor="w", padx=12, pady=(8, 2))
 
         self.log_text = tk.Text(
-            log_frame, height=10, width=50,
+            log_frame, height=6, width=50,
             bg=PANEL, fg=TEXT, insertbackground=TEXT,
             font=("Courier", 10), relief="flat",
             state="disabled", wrap="word"
@@ -128,6 +134,82 @@ class AuthGUI:
         )
         self.reset_btn.pack(side="left", padx=8)
 
+        self.stop_btn = tk.Button(
+            btn_frame, text="Stop",
+            font=("Helvetica", 12),
+            bg=RED, fg=BG, activebackground=TEXT, activeforeground=BG,
+            relief="flat", padx=20, pady=10, cursor="hand2",
+            command=self._on_stop, state="disabled"
+        )
+        self.stop_btn.pack(side="left", padx=8)
+
+        self.test_btn = tk.Button(
+            btn_frame, text="Test Mode",
+            font=("Helvetica", 12),
+            bg=YELLOW, fg=BG, activebackground=TEXT, activeforeground=BG,
+            relief="flat", padx=20, pady=10, cursor="hand2",
+            command=self._on_test_mode
+        )
+        self.test_btn.pack(side="left", padx=8)
+
+        # Secure Storage Section
+        storage_frame = tk.Frame(self.root, bg=PANEL, highlightthickness=1,
+                                highlightbackground=BORDER)
+        storage_frame.pack(fill="both", expand=True, padx=20, pady=(10, 10))
+
+        tk.Label(storage_frame, text="SECURE STORAGE", font=("Helvetica", 8, "bold"),
+                 bg=PANEL, fg=SUBTLE).pack(anchor="w", padx=12, pady=(8, 2))
+
+        self.storage_status = tk.Label(
+            storage_frame, text="🔒 Locked - Authenticate to access",
+            font=("Helvetica", 10), bg=PANEL, fg=RED
+        )
+        self.storage_status.pack(anchor="w", padx=12, pady=(4, 8))
+
+        # File list
+        list_frame = tk.Frame(storage_frame, bg=PANEL)
+        list_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        self.file_listbox = tk.Listbox(
+            list_frame, height=5, bg=PANEL, fg=TEXT,
+            font=("Courier", 9), relief="flat",
+            selectbackground=BLUE, selectforeground=BG,
+            yscrollcommand=scrollbar.set
+        )
+        self.file_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.file_listbox.yview)
+
+        # Storage buttons
+        storage_btn_frame = tk.Frame(storage_frame, bg=PANEL)
+        storage_btn_frame.pack(pady=(0, 12))
+
+        self.add_btn = tk.Button(
+            storage_btn_frame, text="Add File",
+            font=("Helvetica", 9), bg=BLUE, fg=BG,
+            relief="flat", padx=12, pady=6, cursor="hand2",
+            command=self._on_add_file, state="disabled"
+        )
+        self.add_btn.pack(side="left", padx=4)
+
+        self.open_btn = tk.Button(
+            storage_btn_frame, text="Open File",
+            font=("Helvetica", 9), bg=GREEN, fg=BG,
+            relief="flat", padx=12, pady=6, cursor="hand2",
+            command=self._on_open_file, state="disabled"
+        )
+        self.open_btn.pack(side="left", padx=4)
+
+        self.delete_btn = tk.Button(
+            storage_btn_frame, text="Delete",
+            font=("Helvetica", 9), bg=RED, fg=BG,
+            relief="flat", padx=12, pady=6, cursor="hand2",
+            command=self._on_delete_file, state="disabled"
+        )
+        self.delete_btn.pack(side="left", padx=4)
+
     # ------------------------------------------------------------------
     # Status Management
     # ------------------------------------------------------------------
@@ -135,6 +217,8 @@ class AuthGUI:
     def _set_status(self, state: str, message: str = None):
         states = {
             "idle":          (SUBTLE, "Idle"),
+            "ready":         (YELLOW, "Sending READY - Waiting for iPhone..."),
+            "connected":     (BLUE,   "iPhone Connected"),
             "transmitting":  (YELLOW, "Transmitting Challenge..."),
             "waiting":       (YELLOW, "Waiting for Response..."),
             "verifying":     (BLUE,   "Verifying Response..."),
@@ -180,10 +264,13 @@ class AuthGUI:
 
     def _on_start(self):
         self.start_btn.config(state="disabled")
+        self.stop_btn.config(state="normal")
         self.result_label.config(text="")
         self.result_frame.config(bg=BG)
         self._clear_log()
         self.progress.start(12)
+        self.auth_running = True
+        self.stop_requested = False
         threading.Thread(target=self._run_authentication, daemon=True).start()
 
     def _on_reset(self):
@@ -193,12 +280,53 @@ class AuthGUI:
         self.result_label.config(text="")
         self.result_frame.config(bg=BG)
         self.start_btn.config(state="normal")
+        self.stop_btn.config(state="disabled")
+        self.authenticated = False
+        self.auth_running = False
+        self.stop_requested = False
+        self._update_storage_state()
         if self.authenticator:
             try:
                 self.authenticator.cleanup()
             except Exception:
                 pass
             self.authenticator = None
+
+    def _on_stop(self):
+        """Stop the current authentication process"""
+        self.stop_requested = True
+        self.progress.stop()
+        self._set_status("idle", "Stopped by user")
+        self._log("\nAuthentication stopped by user")
+        self.start_btn.config(state="normal")
+        self.stop_btn.config(state="disabled")
+        self.auth_running = False
+        if self.authenticator:
+            try:
+                self.authenticator.cleanup()
+            except Exception:
+                pass
+
+    def _on_test_mode(self):
+        """Simulate successful authentication for testing storage"""
+        self._clear_log()
+        self._log("TEST MODE: Simulating successful authentication...")
+        self._log("Generating test key...")
+        
+        # Create test authenticator and get key
+        test_auth = AcousticAuthenticator()
+        shared_key = test_auth.auth_protocol.get_shared_key()
+        
+        self.authenticated = True
+        self.storage = SecureStorage(shared_key)
+        self._update_storage_state()
+        self._refresh_file_list()
+        
+        self._set_status("success", "Test Mode - Storage Unlocked")
+        self._log("\n✓ Storage unlocked in test mode")
+        self._log("You can now add, open, and delete files")
+        self._show_result(True)
+        self.result_label.config(text="TEST MODE - STORAGE UNLOCKED")
 
     # ------------------------------------------------------------------
     # Authentication Flow (runs in background thread)
@@ -208,64 +336,239 @@ class AuthGUI:
         try:
             self.authenticator = AcousticAuthenticator()
 
-            # Step 1 — Generate and transmit challenge
+            # Use new handshaking protocol
+            self.root.after(0, self._log, "=== ACOUSTIC AUTHENTICATION WITH HANDSHAKING ===")
+            self.root.after(0, self._log, "\nPress 'Authenticate' on iPhone when ready\n")
+            
+            # Step 1 - Handshake: Send READY and wait for ACK
+            if self.stop_requested:
+                return
+            
+            self.root.after(0, self._set_status, "ready")
+            self.root.after(0, self._log, "[1/4] Establishing connection...")
+            
+            max_attempts = 15  # 30 seconds
+            connected = False
+            
+            for attempt in range(max_attempts):
+                if self.stop_requested:
+                    return
+                    
+                self.root.after(0, self._log, f"      Attempt {attempt + 1}/{max_attempts}: Sending READY tone...")
+                self.authenticator.send_ready_tone()
+                
+                if self.stop_requested:
+                    return
+                
+                if self.authenticator.listen_for_ack(timeout=2.0):
+                    connected = True
+                    break
+                
+                self.root.after(0, self._log, "      No ACK received, retrying...")
+            
+            if not connected:
+                raise RuntimeError("Connection failed - iPhone did not respond")
+            
+            self.root.after(0, self._set_status, "connected")
+            self.root.after(0, self._log, "      ✓ iPhone connected\n")
+
+            # Step 2 - Send challenge
+            if self.stop_requested:
+                return
+            
             self.root.after(0, self._set_status, "transmitting")
-            self.root.after(0, self._log, "[1/3] Generating cryptographic challenge...")
+            self.root.after(0, self._log, "[2/4] Sending challenge...")
             challenge = self.authenticator.auth_protocol.initiate_authentication()
             self.root.after(0, self._log, f"      Challenge: {challenge.hex()[:16]}...")
-
-            self.root.after(0, self._log, "[1/3] Transmitting challenge via FSK audio...")
             self.authenticator.fsk.transmit_data_with_protocol(challenge)
-            self.root.after(0, self._log, "      Transmission complete.")
+            self.root.after(0, self._log, "      Transmission complete\n")
 
-            # Step 2 — Receive response
+            # Step 3 - Receive response
+            if self.stop_requested:
+                return
+            
             self.root.after(0, self._set_status, "waiting")
-            self.root.after(0, self._log, "[2/3] Listening for response...")
+            self.root.after(0, self._log, "[3/4] Listening for response...")
 
             frame_bits = (32 + 5) * 8
             duration = frame_bits * self.authenticator.fsk.symbol_duration + 1.0
+            
             rx_stats = self.authenticator.fsk.receive_data_with_protocol(
                 expected_frames=1, timeout_per_frame=duration
             )
 
+            if self.stop_requested:
+                return
+
             if not rx_stats['successful_frames']:
-                raise RuntimeError("No response received — check device proximity")
+                raise RuntimeError("No response received")
 
             received_response = rx_stats['recovered_data']
             self.root.after(0, self._log, f"      Response: {received_response.hex()[:16]}...")
 
-            # Step 3 — Verify
+            # Step 4 - Verify and send confirmation
+            if self.stop_requested:
+                return
+            
             self.root.after(0, self._set_status, "verifying")
-            self.root.after(0, self._log, "[3/3] Verifying HMAC-SHA256 response...")
+            self.root.after(0, self._log, "[4/4] Verifying HMAC-SHA256...")
 
             success = self.authenticator.auth_protocol.verify_authentication(received_response)
+
+            if self.stop_requested:
+                return
+
+            # Send ACK or NACK
+            self.root.after(0, self._log, "      Sending confirmation to iPhone...")
+            if success:
+                self.authenticator.send_ack_tone()
+            else:
+                self.authenticator.send_nack_tone()
 
             # Show result
             self.root.after(0, self.progress.stop)
             if success:
                 self.root.after(0, self._set_status, "success")
-                self.root.after(0, self._log, "      Verification PASSED.")
-                self.root.after(0, self._log, "\nACCESS GRANTED")
+                self.root.after(0, self._log, "      ✓ Verification PASSED\n")
+                self.root.after(0, self._log, "🔓 ACCESS GRANTED")
             else:
                 self.root.after(0, self._set_status, "failed")
-                self.root.after(0, self._log, "      Verification FAILED — response mismatch.")
-                self.root.after(0, self._log, "\nACCESS DENIED")
+                self.root.after(0, self._log, "      ✗ Verification FAILED\n")
+                self.root.after(0, self._log, "🔒 ACCESS DENIED")
 
             self.root.after(0, self._show_result, success)
+            
+            # Unlock storage on success
+            if success:
+                self.authenticated = True
+                shared_key = self.authenticator.auth_protocol.get_shared_key()
+                self.storage = SecureStorage(shared_key)
+                self.root.after(0, self._update_storage_state)
+                self.root.after(0, self._refresh_file_list)
 
         except Exception as e:
-            self.root.after(0, self.progress.stop)
-            self.root.after(0, self._set_status, "error", f"Error: {str(e)}")
-            self.root.after(0, self._log, f"\nERROR: {e}")
-            self.root.after(0, self._show_result, False)
+            if not self.stop_requested:
+                self.root.after(0, self.progress.stop)
+                self.root.after(0, self._set_status, "error", f"Error: {str(e)}")
+                self.root.after(0, self._log, f"\n❌ ERROR: {e}")
+                self.root.after(0, self._show_result, False)
+                # Try to send NACK on error
+                try:
+                    if self.authenticator:
+                        self.authenticator.send_nack_tone()
+                except:
+                    pass
 
         finally:
+            self.auth_running = False
             self.root.after(0, lambda: self.start_btn.config(state="normal"))
+            self.root.after(0, lambda: self.stop_btn.config(state="disabled"))
             if self.authenticator:
                 try:
                     self.authenticator.cleanup()
                 except Exception:
                     pass
+
+    # ------------------------------------------------------------------
+    # Secure Storage Handlers
+    # ------------------------------------------------------------------
+
+    def _update_storage_state(self):
+        """Update storage UI based on authentication state"""
+        if self.authenticated:
+            self.storage_status.config(
+                text="🔓 Unlocked - Storage accessible",
+                fg=GREEN
+            )
+            self.add_btn.config(state="normal")
+            self.open_btn.config(state="normal")
+            self.delete_btn.config(state="normal")
+        else:
+            self.storage_status.config(
+                text="🔒 Locked - Authenticate to access",
+                fg=RED
+            )
+            self.add_btn.config(state="disabled")
+            self.open_btn.config(state="disabled")
+            self.delete_btn.config(state="disabled")
+
+    def _refresh_file_list(self):
+        """Refresh the file list display"""
+        self.file_listbox.delete(0, tk.END)
+        if self.storage:
+            files = self.storage.list_files()
+            for f in files:
+                size_kb = f['size'] / 1024
+                self.file_listbox.insert(tk.END, f"{f['name']} ({size_kb:.1f} KB)")
+
+    def _on_add_file(self):
+        """Add a file to secure storage"""
+        if not self.authenticated:
+            messagebox.showerror("Error", "Please authenticate first")
+            return
+        
+        file_path = filedialog.askopenfilename(
+            title="Select file to encrypt and store",
+            filetypes=[("All files", "*.*")]
+        )
+        
+        if file_path:
+            if self.storage.add_file(file_path):
+                self._refresh_file_list()
+                messagebox.showinfo("Success", "File encrypted and stored")
+            else:
+                messagebox.showerror("Error", "Failed to store file")
+
+    def _on_open_file(self):
+        """Open a file from secure storage"""
+        if not self.authenticated:
+            messagebox.showerror("Error", "Please authenticate first")
+            return
+        
+        selection = self.file_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a file")
+            return
+        
+        files = self.storage.list_files()
+        file_id = files[selection[0]]['id']
+        file_name = files[selection[0]]['name']
+        
+        data = self.storage.get_file(file_id)
+        if data:
+            save_path = filedialog.asksaveasfilename(
+                title="Save decrypted file as",
+                initialfile=file_name,
+                defaultextension=""
+            )
+            if save_path:
+                with open(save_path, 'wb') as f:
+                    f.write(data)
+                messagebox.showinfo("Success", f"File decrypted and saved to:\n{save_path}")
+        else:
+            messagebox.showerror("Error", "Failed to decrypt file")
+
+    def _on_delete_file(self):
+        """Delete a file from secure storage"""
+        if not self.authenticated:
+            messagebox.showerror("Error", "Please authenticate first")
+            return
+        
+        selection = self.file_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a file")
+            return
+        
+        files = self.storage.list_files()
+        file_id = files[selection[0]]['id']
+        file_name = files[selection[0]]['name']
+        
+        if messagebox.askyesno("Confirm", f"Delete {file_name}?"):
+            if self.storage.delete_file(file_id):
+                self._refresh_file_list()
+                messagebox.showinfo("Success", "File deleted")
+            else:
+                messagebox.showerror("Error", "Failed to delete file")
 
 
 # ------------------------------------------------------------------
@@ -274,6 +577,7 @@ class AuthGUI:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("420x620")
+    root.geometry("500x950")
+    root.resizable(True, True)
     app = AuthGUI(root)
     root.mainloop()
