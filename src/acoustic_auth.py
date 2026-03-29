@@ -146,9 +146,6 @@ class AcousticAuthenticator:
             diff = sum(1 for a, b in zip(bits, expected_bits) if a != b)
             print(f'Bit errors: {diff}/64')
 
-        print('Sending ACK after response...')
-        self.tone_utils.play_tone(self.READY_FREQ, self.TONE_DURATION)
-        print('✅ ACK sent')
         return response
 
     def send_result(self, success):

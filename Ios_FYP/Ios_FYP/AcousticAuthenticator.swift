@@ -113,14 +113,6 @@ class AcousticAuthenticator: ObservableObject {
             try await transmitBits(data: response)
             log("✅ Response transmitted")
 
-            // Listen for ACK from laptop - confirms response received, ready for result
-            log("👂 Waiting for ACK from laptop...")
-            let ackDetected = try await listenForTone(frequency: readyFreq, maxDuration: laptopAckWindow + 2.0)
-            if !ackDetected {
-                throw AuthError.decodingFailed("No ACK received after response")
-            }
-            log("✅ ACK received - laptop got response")
-
             // Phase 3 Slot 3: Listen for result
             updateState(.listeningResult)
             log("👂 Listening for result tone...")
