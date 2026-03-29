@@ -119,6 +119,9 @@ class AcousticAuthenticator:
                 return False
 
             self.send_sync()
+            # Wait for iPhone to finish processing sync before sending challenge
+            # = sync transmission duration + ACK tone duration (worst case timing)
+            time.sleep(self.SYNC_DURATION + self.TONE_DURATION)
             challenge = self.send_challenge()
             response = self.receive_response()
             success = self.auth_protocol.verify_authentication(response)
