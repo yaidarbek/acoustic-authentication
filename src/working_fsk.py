@@ -8,7 +8,7 @@ class WorkingFSK:
         self.sample_rate = 44100
         self.f0 = 7000   # Binary '0' - 7 kHz
         self.f1 = 9000   # Binary '1' - 9 kHz
-        self.symbol_duration = 0.1  # 100ms for better detection
+        self.symbol_duration = 0.15  # 150ms - matches Swift FSKDecoder
         self.amplitude = 0.1
         
         self.audio = pyaudio.PyAudio()
@@ -130,24 +130,44 @@ class WorkingFSK:
         return signal
 
     def barker_sync(self, signal: np.ndarray) -> int:
-        """
-        Barker-7 sequence synchronization
-        Replaces simple '11' start pattern with cross-correlation
-        Barker-7: [1, 1, 1, -1, -1, 1, -1] — optimal autocorrelation properties
-        Returns sample index of best frame start position
-        """
-        barker = np.array([1, 1, 1, -1, -1, 1, -1], dtype=np.float32)
+        barker    = np.array([1, 1, 1, -1, -1, 1, -1], dtype=np.float32)
         samples_per_symbol = int(self.sample_rate * self.symbol_duration)
-
-        # Build reference signal: each Barker chip is one symbol duration
         reference = np.repeat(barker, samples_per_symbol)
+        if len(signal) < len(reference):
+            return 0
 
-        # Cross-correlate received signal with reference
-        correlation = np.correlate(signal, reference, mode='valid')
+        # Build reference using same tone generation as encoder (with fade)
+        ref_signal = np.array([], dtype=np.float32)
+        for chip in barker:
+            freq = self.f1 if chip > 0 else self.f0
+            ref_signal = np.concatenate([ref_signal, self.generate_tone(freq, self.symbol_duration)])
+        reference = ref_signal
 
-        # Best start is the peak of the correlation
-        best_start = int(np.argmax(np.abs(correlation)))
-        return best_start
+        # Frame always starts near beginning (guard=0.2s + small offset)
+        # Limit search to first 3s to avoid false peaks in noise
+        search_end    = min(len(signal) - len(reference), int(self.sample_rate * 3.0))
+        search_signal = signal[:search_end + len(reference)]
+
+        # Step 1: Coarse search on consistently downsampled signal
+        ds     = 10
+        sig_ds = search_signal[::ds]
+        ref_ds = reference[::ds]
+        corr   = np.correlate(sig_ds, ref_ds, mode='valid')
+        coarse_peak = int(np.argmax(np.abs(corr))) * ds
+
+        # Step 2: Fine search every 1 sample within +-1 symbol around coarse peak
+        fine_start = max(0, coarse_peak - samples_per_symbol)
+        fine_end   = min(len(signal) - len(reference), coarse_peak + samples_per_symbol)
+        max_corr   = 0.0
+        fine_peak  = coarse_peak
+        for i in range(fine_start, fine_end):
+            s = float(np.abs(np.dot(signal[i:i+len(reference)], reference)))
+            if s > max_corr:
+                max_corr  = s
+                fine_peak = i
+
+        print(f'Barker sync: coarse={coarse_peak} fine={fine_peak}')
+        return fine_peak
 
     def decode_signal(self, signal, expected_bits):
         """Decode FSK signal with bandpass filter, AGC, and Barker sync"""

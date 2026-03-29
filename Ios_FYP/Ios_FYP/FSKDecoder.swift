@@ -11,7 +11,7 @@ class FSKDecoder {
     let sampleRate: Double = 44100.0
     let f0: Double = 7000.0    // Binary '0' — 7 kHz
     let f1: Double = 9000.0    // Binary '1' — 9 kHz
-    let symbolDuration: Double = 0.1  // 100 ms per symbol
+    let symbolDuration: Double = 0.15  // 150ms — matches Python working_fsk.py
     let bandpassLow: Double  = 6000.0
     let bandpassHigh: Double = 10000.0
 
@@ -66,43 +66,49 @@ class FSKDecoder {
     /// Find frame start using Barker-7 cross-correlation
     /// Mirrors: working_fsk.py WorkingFSK.barker_sync()
     func barkerSync(signal: [Float]) -> Int {
-        print("[FSKDecoder] Building Barker reference signal...")
-        // Build reference signal: each Barker chip is one symbol duration
+        // Build reference using same tone generation as encoder (with fade)
+        // This ensures correlation matches actual signal shape
         var reference: [Float] = []
         for chip in barker {
             let freq = chip > 0 ? f1 : f0
-            let tone = generateToneBuffer(frequency: freq, duration: symbolDuration)
-            reference.append(contentsOf: tone)
+            reference.append(contentsOf: generateTone(frequency: freq, duration: symbolDuration))
         }
+        guard signal.count >= reference.count else { return 0 }
 
-        guard signal.count >= reference.count else { 
-            print("[FSKDecoder] Signal too short for Barker sync")
-            return 0 
-        }
+        // Limit search to first 3s to avoid false peaks in noise
+        let searchEnd   = min(signal.count - reference.count, Int(sampleRate * 3.0))
+        let searchSlice = Array(signal[0..<(searchEnd + reference.count)])
 
-        // Optimized cross-correlation: downsample for speed
-        let step = 100  // Check every 100 samples instead of every sample
-        let corrLength = (signal.count - reference.count) / step
+        // Step 1: Coarse search on consistently downsampled signal
+        let ds    = 10
+        let sigDs = stride(from: 0, to: searchSlice.count, by: ds).map { searchSlice[$0] }
+        let refDs = stride(from: 0, to: reference.count,   by: ds).map { reference[$0] }
+        let corrLen = sigDs.count - refDs.count
+        guard corrLen > 0 else { return 0 }
         var maxCorr: Float = 0
-        var maxIndex = 0
-        
-        print("[FSKDecoder] Cross-correlating (checking \(corrLength) positions)...")
-
-        for i in stride(from: 0, to: signal.count - reference.count, by: step) {
+        var coarsePeak = 0
+        for i in 0..<corrLen {
             var sum: Float = 0
-            // Sample every 10th point in reference for speed
-            for j in stride(from: 0, to: reference.count, by: 10) {
-                sum += signal[i + j] * reference[j]
-            }
-            let corr = abs(sum)
-            if corr > maxCorr {
-                maxCorr = corr
-                maxIndex = i
-            }
+            for j in 0..<refDs.count { sum += sigDs[i+j] * refDs[j] }
+            let c = abs(sum)
+            if c > maxCorr { maxCorr = c; coarsePeak = i }
         }
-        
-        print("[FSKDecoder] Peak correlation at index \(maxIndex) (value: \(maxCorr))")
-        return maxIndex
+        coarsePeak *= ds
+
+        // Step 2: Fine search every 1 sample within +-1 symbol around coarse peak
+        let fineStart = max(0, coarsePeak - samplesPerSymbol)
+        let fineEnd   = min(signal.count - reference.count, coarsePeak + samplesPerSymbol)
+        maxCorr = 0
+        var finePeak = coarsePeak
+        for i in fineStart..<fineEnd {
+            var sum: Float = 0
+            for j in 0..<reference.count { sum += signal[i+j] * reference[j] }
+            let c = abs(sum)
+            if c > maxCorr { maxCorr = c; finePeak = i }
+        }
+
+        print("[FSKDecoder] Barker sync: coarse=\(coarsePeak) fine=\(finePeak) peak=\(maxCorr)")
+        return finePeak
     }
 
     // MARK: - FSK Decoding
@@ -113,54 +119,61 @@ class FSKDecoder {
     func decodeSignal(signal: [Float], expectedBits: Int) -> String {
         let startTime = Date()
         print("[FSKDecoder] Starting decode: \(signal.count) samples, expecting \(expectedBits) bits")
-        
-        // Step 1: AGC
-        let agcStart = Date()
-        print("[FSKDecoder] Applying AGC normalization...")
-        let normalized = applyAGC(samples: signal)
-        let agcTime = Date().timeIntervalSince(agcStart)
-        print("[FSKDecoder] AGC complete in \(String(format: "%.3f", agcTime))s")
 
-        // Step 2: Barker sync — find frame start
+        // Step 1: Signal quality check
+        let maxAmp = signal.map { abs($0) }.max() ?? 0
+        print("[FSKDecoder] Signal max amplitude: \(String(format: \"%.4f\", maxAmp))")
+        guard maxAmp > 0.01 else {
+            print("[FSKDecoder] Signal too weak, skipping decode")
+            return ""
+        }
+
+        // Step 2: Barker sync on raw signal — find frame start first
         let syncStart = Date()
         print("[FSKDecoder] Searching for Barker-7 sync pattern...")
         let barkerLen = barker.count * samplesPerSymbol
-        let frameStart = barkerSync(signal: normalized)
-        let dataStart = frameStart + barkerLen
-        let syncTime = Date().timeIntervalSince(syncStart)
-        print("[FSKDecoder] Frame start found at sample \(frameStart), data starts at \(dataStart) (\(String(format: "%.3f", syncTime))s)")
+        let frameStart = barkerSync(signal: signal)
+        let dataStart  = frameStart + barkerLen
+        let syncTime   = Date().timeIntervalSince(syncStart)
+        print("[FSKDecoder] Frame start found at sample \(frameStart), data starts at \(dataStart) (\(String(format: \"%.3f\", syncTime))s)")
 
-        // Step 3: Goertzel demodulation
+        // Step 3: Windowed AGC — normalize only the detected signal window
+        let windowStart = max(0, frameStart)
+        let windowEnd   = min(signal.count, dataStart + expectedBits * samplesPerSymbol)
+        let window      = Array(signal[windowStart..<windowEnd])
+        let normalized  = applyAGC(samples: window)
+        let windowedDataStart = dataStart - windowStart
+
+        // Step 4: Goertzel demodulation on normalized window
         let demodStart = Date()
         print("[FSKDecoder] Demodulating \(expectedBits) bits using Goertzel algorithm...")
         var decodedBits = ""
 
         for i in 0..<expectedBits {
-            let symbolStart = dataStart + i * samplesPerSymbol
-            let symbolEnd = symbolStart + samplesPerSymbol
+            let symbolStart = windowedDataStart + i * samplesPerSymbol
+            let symbolEnd   = symbolStart + samplesPerSymbol
 
-            guard symbolEnd <= normalized.count else { 
+            guard symbolEnd <= normalized.count else {
                 print("[FSKDecoder] Ran out of samples at bit \(i)")
-                break 
+                break
             }
 
             let symbolData = Array(normalized[symbolStart..<symbolEnd])
             let powerF0 = goertzelDetect(samples: symbolData, frequency: f0)
             let powerF1 = goertzelDetect(samples: symbolData, frequency: f1)
-            
+
             let bit = powerF1 > powerF0 ? "1" : "0"
             decodedBits += bit
-            
-            // Log every 32 bits
+
             if (i + 1) % 32 == 0 {
                 print("[FSKDecoder] Decoded \(i + 1)/\(expectedBits) bits: ...\(decodedBits.suffix(16))")
             }
         }
-        
-        let demodTime = Date().timeIntervalSince(demodStart)
-        let totalTime = Date().timeIntervalSince(startTime)
-        print("[FSKDecoder] Demodulation complete in \(String(format: "%.3f", demodTime))s")
-        print("[FSKDecoder] Total decoding time: \(String(format: "%.3f", totalTime))s")
+
+        let demodTime  = Date().timeIntervalSince(demodStart)
+        let totalTime  = Date().timeIntervalSince(startTime)
+        print("[FSKDecoder] Demodulation complete in \(String(format: \"%.3f\", demodTime))s")
+        print("[FSKDecoder] Total decoding time: \(String(format: \"%.3f\", totalTime))s")
         print("[FSKDecoder] Decoded \(decodedBits.count) bits")
         print("[FSKDecoder] First 32 bits: \(decodedBits.prefix(32))")
         return decodedBits
