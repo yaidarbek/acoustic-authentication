@@ -59,8 +59,9 @@ class AcousticAuthenticator:
             chunk_duration=0.5, threshold=10.0
         )
         if detected:
-            # Wait for iPhone to finish playing ACK tone and switch to record mode
-            time.sleep(self.TONE_DURATION + 0.3)
+            # Wait for iPhone to finish playing ACK tone, switch audio session,
+            # and start transmitting. Must be >= ACK tone duration (1.0s) + session switch (~0.5s)
+            time.sleep(self.TONE_DURATION + 0.5)
         return detected
 
     # -- Phase 1: Beacon ------------------------------------------------
@@ -120,7 +121,8 @@ class AcousticAuthenticator:
     def receive_response(self):
         """Receive 64-bit FSK response from iPhone"""
         print('=== SLOT 2: RECEIVING RESPONSE ===')
-        duration = self.RESPONSE_DURATION + 2.0
+        # Add extra buffer before response arrives (iPhone needs time after ACK)
+        duration = self.RESPONSE_DURATION + self.TONE_DURATION + 0.5 + 2.0
         print(f'Recording for {duration:.1f}s...')
         signal = self.fsk.record_data(duration)
 
