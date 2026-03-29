@@ -1,6 +1,5 @@
 import Foundation
 import AVFoundation
-import Combine
 
 enum AuthState {
     case idle
@@ -130,12 +129,13 @@ class AcousticAuthenticator: ObservableObject {
     // MARK: - Phase 1: Beacon detection (real-time chunks)
 
     private func listenForBeacon() async throws {
-        let chunkDuration = 2.0   // check every 2s chunk
-        let maxChunks     = 30    // up to 60 seconds total
+        let chunkDuration = 2.0
+        let maxChunks     = 30
+        // Capture rate once before the loop — stable before engine starts
+        let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
 
         for _ in 0..<maxChunks {
-            let samples    = try await recordRaw(duration: chunkDuration)
-            let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
+            let samples = try await recordRaw(duration: chunkDuration)
             if fskDecoder.detectTone(frequency: readyFreq, in: samples, threshold: 3.0, actualSampleRate: actualRate) {
                 return
             }
@@ -188,8 +188,8 @@ class AcousticAuthenticator: ObservableObject {
     // MARK: - Phase 3: Result tone
 
     private func listenForResult() async throws -> Bool {
-        let samples    = try await recordRaw(duration: 3.0)
         let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
+        let samples    = try await recordRaw(duration: 3.0)
         return fskDecoder.detectTone(frequency: readyFreq, in: samples, threshold: 3.0, actualSampleRate: actualRate)
     }
 
@@ -246,8 +246,9 @@ class AcousticAuthenticator: ObservableObject {
 
     /// Record and resample to FSKDecoder rate — for FSK decoding
     private func recordResampled(duration: Double) async throws -> [Float] {
-        let raw        = try await recordRaw(duration: duration)
+        // Capture actual hardware rate before recording (engine not yet started)
         let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
+        let raw = try await recordRaw(duration: duration)
         return resample(raw, fromRate: actualRate, toRate: fskDecoder.sampleRate)
     }
 
