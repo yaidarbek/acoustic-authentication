@@ -122,7 +122,8 @@ class FSKDecoder {
 
         // Step 1: Signal quality check
         let maxAmp = signal.map { abs($0) }.max() ?? 0
-        print("[FSKDecoder] Signal max amplitude: \(String(format: \"%.4f\", maxAmp))")
+        let maxAmpStr = String(format: "%.4f", maxAmp)
+        print("[FSKDecoder] Signal max amplitude: \(maxAmpStr)")
         guard maxAmp > 0.01 else {
             print("[FSKDecoder] Signal too weak, skipping decode")
             return ""
@@ -135,7 +136,8 @@ class FSKDecoder {
         let frameStart = barkerSync(signal: signal)
         let dataStart  = frameStart + barkerLen
         let syncTime   = Date().timeIntervalSince(syncStart)
-        print("[FSKDecoder] Frame start found at sample \(frameStart), data starts at \(dataStart) (\(String(format: \"%.3f\", syncTime))s)")
+        let syncTimeStr = String(format: "%.3f", syncTime)
+        print("[FSKDecoder] Frame start found at sample \(frameStart), data starts at \(dataStart) (\(syncTimeStr)s)")
 
         // Step 3: Windowed AGC — normalize only the detected signal window
         let windowStart = max(0, frameStart)
@@ -172,8 +174,10 @@ class FSKDecoder {
 
         let demodTime  = Date().timeIntervalSince(demodStart)
         let totalTime  = Date().timeIntervalSince(startTime)
-        print("[FSKDecoder] Demodulation complete in \(String(format: \"%.3f\", demodTime))s")
-        print("[FSKDecoder] Total decoding time: \(String(format: \"%.3f\", totalTime))s")
+        let demodTimeStr = String(format: "%.3f", demodTime)
+        let totalTimeStr = String(format: "%.3f", totalTime)
+        print("[FSKDecoder] Demodulation complete in \(demodTimeStr)s")
+        print("[FSKDecoder] Total decoding time: \(totalTimeStr)s")
         print("[FSKDecoder] Decoded \(decodedBits.count) bits")
         print("[FSKDecoder] First 32 bits: \(decodedBits.prefix(32))")
         return decodedBits
