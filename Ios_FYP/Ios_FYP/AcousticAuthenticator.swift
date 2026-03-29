@@ -72,6 +72,10 @@ class AcousticAuthenticator: ObservableObject {
             try await listenForSync()
             log("✅ Sync received - challenge coming immediately")
 
+            // Wait for laptop to finish sync transmission and start challenge
+            let syncWait = Double(7 + syncBits) * fskDecoder.symbolDuration + 2.0
+            try await Task.sleep(nanoseconds: UInt64(syncWait * 1_000_000_000))
+
             // Phase 3 Slot 1: Record challenge
             updateState(.listening)
             log("🎧 Recording FSK challenge (32 bits)...")
@@ -99,6 +103,10 @@ class AcousticAuthenticator: ObservableObject {
             log("📡 Transmitting FSK response (64 bits)...")
             try await transmitBits(data: response)
             log("✅ Response transmitted")
+
+            // Wait for laptop to finish recording response, verify, and play result tone
+            let resultWait = Double(7 + 64) * fskDecoder.symbolDuration + 2.0 + 2.0
+            try await Task.sleep(nanoseconds: UInt64(resultWait * 1_000_000_000))
 
             // Phase 3 Slot 3: Listen for result
             updateState(.listeningResult)
