@@ -311,20 +311,14 @@ class AuthGUI:
         """Simulate successful authentication for testing storage"""
         self._clear_log()
         self._log("TEST MODE: Simulating successful authentication...")
-        self._log("Generating test key...")
-        
-        # Create test authenticator and get key
         test_auth = AcousticAuthenticator()
         shared_key = test_auth.auth_protocol.get_shared_key()
-        
         self.authenticated = True
         self.storage = SecureStorage(shared_key)
         self._update_storage_state()
         self._refresh_file_list()
-        
         self._set_status("success", "Test Mode - Storage Unlocked")
         self._log("\n✓ Storage unlocked in test mode")
-        self._log("You can now add, open, and delete files")
         self._show_result(True)
         self.result_label.config(text="TEST MODE - STORAGE UNLOCKED")
 
@@ -336,115 +330,60 @@ class AuthGUI:
         try:
             self.authenticator = AcousticAuthenticator()
 
-            # Use new handshaking protocol
-            self.root.after(0, self._log, "=== ACOUSTIC AUTHENTICATION WITH HANDSHAKING ===")
-            self.root.after(0, self._log, "\nPress 'Authenticate' on iPhone when ready\n")
-            
-            # Step 1 - Handshake: Send READY and wait for ACK
+            self.root.after(0, self._log, "=== ACOUSTIC AUTHENTICATION ===")
+            self.root.after(0, self._log, "Press 'Authenticate' on iPhone when ready\n")
+            self.root.after(0, self._set_status, "ready")
+
             if self.stop_requested:
                 return
-            
-            self.root.after(0, self._set_status, "ready")
-            self.root.after(0, self._log, "[1/4] Establishing connection...")
-            
-            max_attempts = 15  # 30 seconds
-            connected = False
-            
-            for attempt in range(max_attempts):
-                if self.stop_requested:
-                    return
-                    
-                self.root.after(0, self._log, f"      Attempt {attempt + 1}/{max_attempts}: Sending READY tone...")
-                self.authenticator.send_ready_tone()
-                
-                if self.stop_requested:
-                    return
-                
-                if self.authenticator.listen_for_ack(timeout=2.0):
-                    connected = True
-                    break
-                
-                self.root.after(0, self._log, "      No ACK received, retrying...")
-            
-            if not connected:
+
+            # Phase 1: Beacon
+            self.root.after(0, self._log, "[1/3] Running beacon...")
+            if not self.authenticator.run_beacon():
                 raise RuntimeError("Connection failed - iPhone did not respond")
-            
+
+            if self.stop_requested:
+                return
+
             self.root.after(0, self._set_status, "connected")
             self.root.after(0, self._log, "      ✓ iPhone connected\n")
 
-            # Step 2 - Send challenge
-            if self.stop_requested:
-                return
-            
+            # Phase 2: Sync
             self.root.after(0, self._set_status, "transmitting")
-            self.root.after(0, self._log, "[2/4] Sending challenge...")
-            challenge = self.authenticator.auth_protocol.initiate_authentication()
-            self.root.after(0, self._log, f"      Challenge: {challenge.hex()[:16]}...")
-            self.authenticator.fsk.transmit_data_with_protocol(challenge)
-            self.root.after(0, self._log, "      Transmission complete\n")
+            self.root.after(0, self._log, "[2/3] Sending sync + challenge...")
+            self.authenticator.send_sync()
+            challenge = self.authenticator.send_challenge()
+            self.root.after(0, self._log, f"      Challenge: {challenge.hex()}")
 
-            # Step 3 - Receive response
             if self.stop_requested:
                 return
-            
+
+            # Phase 3: Receive and verify response
             self.root.after(0, self._set_status, "waiting")
-            self.root.after(0, self._log, "[3/4] Listening for response...")
-
-            frame_bits = (32 + 5) * 8
-            duration = frame_bits * self.authenticator.fsk.symbol_duration + 1.0
-            
-            rx_stats = self.authenticator.fsk.receive_data_with_protocol(
-                expected_frames=1, timeout_per_frame=duration
-            )
+            self.root.after(0, self._log, "[3/3] Waiting for response...")
+            response = self.authenticator.receive_response()
 
             if self.stop_requested:
                 return
 
-            if not rx_stats['successful_frames']:
-                raise RuntimeError("No response received")
-
-            received_response = rx_stats['recovered_data']
-            self.root.after(0, self._log, f"      Response: {received_response.hex()[:16]}...")
-
-            # Step 4 - Verify and send confirmation
-            if self.stop_requested:
-                return
-            
             self.root.after(0, self._set_status, "verifying")
-            self.root.after(0, self._log, "[4/4] Verifying HMAC-SHA256...")
+            success = self.authenticator.auth_protocol.verify_authentication(response)
+            self.authenticator.send_result(success)
 
-            success = self.authenticator.auth_protocol.verify_authentication(received_response)
-
-            if self.stop_requested:
-                return
-
-            # Send ACK or NACK
-            self.root.after(0, self._log, "      Sending confirmation to iPhone...")
-            if success:
-                self.authenticator.send_ack_tone()
-            else:
-                self.authenticator.send_nack_tone()
-
-            # Show result
             self.root.after(0, self.progress.stop)
             if success:
                 self.root.after(0, self._set_status, "success")
-                self.root.after(0, self._log, "      ✓ Verification PASSED\n")
-                self.root.after(0, self._log, "🔓 ACCESS GRANTED")
-            else:
-                self.root.after(0, self._set_status, "failed")
-                self.root.after(0, self._log, "      ✗ Verification FAILED\n")
-                self.root.after(0, self._log, "🔒 ACCESS DENIED")
-
-            self.root.after(0, self._show_result, success)
-            
-            # Unlock storage on success
-            if success:
+                self.root.after(0, self._log, "\n🔓 ACCESS GRANTED")
                 self.authenticated = True
                 shared_key = self.authenticator.auth_protocol.get_shared_key()
                 self.storage = SecureStorage(shared_key)
                 self.root.after(0, self._update_storage_state)
                 self.root.after(0, self._refresh_file_list)
+            else:
+                self.root.after(0, self._set_status, "failed")
+                self.root.after(0, self._log, "\n🔒 ACCESS DENIED")
+
+            self.root.after(0, self._show_result, success)
 
         except Exception as e:
             if not self.stop_requested:
@@ -455,7 +394,7 @@ class AuthGUI:
                 # Try to send NACK on error
                 try:
                     if self.authenticator:
-                        self.authenticator.send_nack_tone()
+                        self.authenticator.send_result(False)
                 except:
                     pass
 
