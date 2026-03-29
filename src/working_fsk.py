@@ -30,17 +30,20 @@ class WorkingFSK:
         return wave.astype(np.float32)
     
     def transmit_data(self, bits):
-        """Transmit binary data as FSK with Barker-7 preamble"""
-        print(f"Transmitting {len(bits)} bits with Barker-7 preamble")
+        """Transmit binary data as FSK with guard interval and Barker-7 preamble"""
+        print(f"Transmitting {len(bits)} bits with guard interval + Barker-7 preamble")
 
         # Barker-7 preamble: 1=f1, -1=f0
         barker = [1, 1, 1, -1, -1, 1, -1]
         preamble_bits = ''.join('1' if c == 1 else '0' for c in barker)
 
-        # Full transmission: preamble + data
+        # Full transmission: guard silence + preamble + data
         full_data = preamble_bits + bits
 
-        signal = np.array([], dtype=np.float32)
+        # 200ms guard interval silence before preamble
+        guard_samples = int(self.sample_rate * 0.2)
+        signal = np.zeros(guard_samples, dtype=np.float32)
+
         for bit in full_data:
             freq = self.f1 if bit == '1' else self.f0
             tone = self.generate_tone(freq, self.symbol_duration)
