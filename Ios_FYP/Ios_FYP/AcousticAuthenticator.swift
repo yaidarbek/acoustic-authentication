@@ -35,6 +35,9 @@ class AcousticAuthenticator: ObservableObject {
     private let readyFreq: Double = 11000.0  // 11 kHz - READY beacon from laptop
     private let ackFreq:   Double = 13000.0  // 13 kHz - ACK to laptop
 
+    // Laptop ACK listen window — iPhone recording must cover this worst-case delay
+    private let laptopAckWindow = 5.0
+
     // MARK: - Public API
 
     func startAuthentication() {
@@ -112,9 +115,7 @@ class AcousticAuthenticator: ObservableObject {
 
             // Listen for ACK from laptop - confirms response received, ready for result
             log("👂 Waiting for ACK from laptop...")
-            let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
-            let ackSamples = try await recordRaw(duration: 5.0)
-            let ackDetected = fskDecoder.detectTone(frequency: readyFreq, in: ackSamples, threshold: 3.0, actualSampleRate: actualRate)
+            let ackDetected = try await listenForTone(frequency: readyFreq, maxDuration: laptopAckWindow + 2.0)
             if !ackDetected {
                 throw AuthError.decodingFailed("No ACK received after response")
             }
@@ -159,12 +160,10 @@ class AcousticAuthenticator: ObservableObject {
     // MARK: - Phase 2: Sync packet
 
     private func listenForSync() async throws {
-        // Buffer = ackToneDuration (worst case laptop detects ACK at start of tone)
-        let buffer = 1.0  // ackToneDuration
-        let duration = Double(7 + syncBits) * fskDecoder.symbolDuration + buffer
+        // Buffer = laptop's ACK listen window (worst case sync arrives after full 5s window)
+        let duration = Double(7 + syncBits) * fskDecoder.symbolDuration + laptopAckWindow
         let samples  = try await recordResampled(duration: duration)
         let bits     = fskDecoder.decodeSignal(signal: samples, expectedBits: syncBits)
-
         guard String(bits.prefix(syncBits)) == String(syncPattern.prefix(syncBits)) else {
             throw AuthError.decodingFailed("Sync pattern mismatch: got \(bits.prefix(16))")
         }
@@ -173,9 +172,8 @@ class AcousticAuthenticator: ObservableObject {
     // MARK: - Phase 3: Record a data slot
 
     private func recordSlot(bits: Int) async throws -> [Float] {
-        // Buffer = sync transmission duration (worst case sync still transmitting when we start)
-        let syncTransmitDuration = Double(7 + syncBits) * fskDecoder.symbolDuration
-        let duration = Double(7 + bits) * fskDecoder.symbolDuration + syncTransmitDuration
+        // Buffer = laptop's ACK listen window (worst case challenge arrives after full 5s window)
+        let duration = Double(7 + bits) * fskDecoder.symbolDuration + laptopAckWindow
         return try await recordResampled(duration: duration)
     }
 
@@ -198,12 +196,24 @@ class AcousticAuthenticator: ObservableObject {
         try await playSignal(signal)
     }
 
+    private func listenForTone(frequency: Double, maxDuration: Double) async throws -> Bool {
+        let chunkDuration = 0.5
+        let maxChunks = Int(maxDuration / chunkDuration)
+        let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
+
+        for _ in 0..<maxChunks {
+            let samples = try await recordRaw(duration: chunkDuration)
+            if fskDecoder.detectTone(frequency: frequency, in: samples, threshold: 3.0, actualSampleRate: actualRate) {
+                return true
+            }
+        }
+        return false
+    }
+
     // MARK: - Phase 3: Result tone
 
     private func listenForResult() async throws -> Bool {
-        let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
-        let samples    = try await recordRaw(duration: 3.0)
-        return fskDecoder.detectTone(frequency: readyFreq, in: samples, threshold: 3.0, actualSampleRate: actualRate)
+        return try await listenForTone(frequency: readyFreq, maxDuration: laptopAckWindow + 2.0)
     }
 
     // MARK: - Audio Helpers
