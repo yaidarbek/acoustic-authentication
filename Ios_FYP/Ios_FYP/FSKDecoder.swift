@@ -67,7 +67,6 @@ class FSKDecoder {
     /// Mirrors: working_fsk.py WorkingFSK.barker_sync()
     func barkerSync(signal: [Float]) -> Int {
         // Build reference using same tone generation as encoder (with fade)
-        // This ensures correlation matches actual signal shape
         var reference: [Float] = []
         for chip in barker {
             let freq = chip > 0 ? f1 : f0
@@ -75,7 +74,7 @@ class FSKDecoder {
         }
         guard signal.count >= reference.count else { return 0 }
 
-        // Limit search to first 3s to avoid false peaks in noise
+        // Limit search to first 3s
         let searchEnd   = min(signal.count - reference.count, Int(sampleRate * 3.0))
         let searchSlice = Array(signal[0..<(searchEnd + reference.count)])
 
@@ -89,20 +88,21 @@ class FSKDecoder {
         var coarsePeak = 0
         for i in 0..<corrLen {
             var sum: Float = 0
-            for j in 0..<refDs.count { sum += sigDs[i+j] * refDs[j] }
+            vDSP_dotpr(sigDs + i, 1, refDs, 1, &sum, vDSP_Length(refDs.count))
             let c = abs(sum)
             if c > maxCorr { maxCorr = c; coarsePeak = i }
         }
         coarsePeak *= ds
 
-        // Step 2: Fine search every 10 samples within +-1 symbol around coarse peak
-        let fineStart = max(0, coarsePeak - samplesPerSymbol)
-        let fineEnd   = min(signal.count - reference.count, coarsePeak + samplesPerSymbol)
+        // Step 2: Fine search every 10 samples within +-100 samples of coarse peak
+        // (coarse already accurate to +-ds=10 samples, so +-100 is generous)
+        let fineStart = max(0, coarsePeak - 100)
+        let fineEnd   = min(signal.count - reference.count, coarsePeak + 100)
         maxCorr = 0
         var finePeak = coarsePeak
         for i in stride(from: fineStart, to: fineEnd, by: 10) {
             var sum: Float = 0
-            for j in 0..<reference.count { sum += signal[i+j] * reference[j] }
+            vDSP_dotpr(signal + i, 1, reference, 1, &sum, vDSP_Length(reference.count))
             let c = abs(sum)
             if c > maxCorr { maxCorr = c; finePeak = i }
         }
@@ -112,7 +112,7 @@ class FSKDecoder {
         let ultraEnd   = min(signal.count - reference.count, finePeak + 10)
         for i in ultraStart..<ultraEnd {
             var sum: Float = 0
-            for j in 0..<reference.count { sum += signal[i+j] * reference[j] }
+            vDSP_dotpr(signal + i, 1, reference, 1, &sum, vDSP_Length(reference.count))
             let c = abs(sum)
             if c > maxCorr { maxCorr = c; finePeak = i }
         }
@@ -147,7 +147,7 @@ class FSKDecoder {
         let dataStart  = frameStart + barkerLen
         let syncTime   = Date().timeIntervalSince(syncStart)
         let syncTimeStr = String(format: "%.3f", syncTime)
-        print("[FSKDecoder] Frame start found at sample \(frameStart), data starts at \(dataStart) (\(syncTimeStr)s)")
+        print("[FSKDecoder] Frame start found at sample \(frameStart) (\(String(format: "%.3f", Double(frameStart)/sampleRate))s), data starts at \(dataStart) (\(String(format: "%.3f", Double(dataStart)/sampleRate))s) took \(syncTimeStr)s")
 
         // Step 3: Windowed AGC — normalize only the detected signal window
         let windowStart = max(0, frameStart)
@@ -236,7 +236,9 @@ class FSKDecoder {
     /// Used for READY/ACK/NACK detection
     /// Returns true if tone power exceeds threshold
     func detectTone(frequency: Double, in signal: [Float], threshold: Double = 100.0, actualSampleRate: Double? = nil) -> Bool {
+        guard !signal.isEmpty else { return false }
         let power = goertzelDetect(samples: signal, frequency: frequency, actualSampleRate: actualSampleRate ?? sampleRate)
+        guard power.isFinite else { return false }
         print("[FSKDecoder] Tone detection at \(Int(frequency))Hz: power=\(String(format: "%.2f", power)), threshold=\(threshold)")
         return power > threshold
     }

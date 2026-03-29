@@ -328,58 +328,81 @@ class AuthGUI:
     def _run_authentication(self):
         try:
             self.authenticator = AcousticAuthenticator()
+            t_start = time.time()
 
-            self.root.after(0, self._log, "=== ACOUSTIC AUTHENTICATION ===")
-            self.root.after(0, self._log, "Press 'Authenticate' on iPhone when ready\n")
+            def ts():
+                return f"[{time.time()-t_start:5.1f}s]"
+
+            def log(msg):
+                self.root.after(0, self._log, f"{ts()} {msg}")
+
+            log("=== ACOUSTIC AUTHENTICATION ===")
+            log("Press 'Authenticate' on iPhone when ready")
             self.root.after(0, self._set_status, "ready")
 
             if self.stop_requested:
                 return
 
             # Phase 1: Beacon
-            self.root.after(0, self._log, "[1/3] Running beacon...")
+            log("[1/3] BEACON: broadcasting READY (11kHz)...")
+            t = time.time()
             if not self.authenticator.run_beacon():
                 raise RuntimeError("Connection failed - iPhone did not respond")
+            log(f"[1/3] BEACON: iPhone connected ({time.time()-t:.1f}s)")
 
             if self.stop_requested:
                 return
 
             self.root.after(0, self._set_status, "connected")
-            self.root.after(0, self._log, "      ✓ iPhone connected\n")
 
             # Phase 2: Sync
             self.root.after(0, self._set_status, "transmitting")
-            self.root.after(0, self._log, "[2/3] Sending sync + challenge...")
+            log("[2/3] SYNC: sending sync pattern...")
+            t = time.time()
             self.authenticator.send_sync()
+            log(f"[2/3] SYNC: ACK received ({time.time()-t:.1f}s)")
+
+            log("[2/3] CHALLENGE: sending challenge...")
+            t = time.time()
             challenge = self.authenticator.send_challenge()
-            self.root.after(0, self._log, f"      Challenge: {challenge.hex()}")
+            log(f"[2/3] CHALLENGE: ACK received ({time.time()-t:.1f}s)")
+            log(f"      challenge={challenge.hex()}")
 
             if self.stop_requested:
                 return
 
-            # Phase 3: Receive and verify response
+            # Phase 3: Response
             self.root.after(0, self._set_status, "waiting")
-            self.root.after(0, self._log, "[3/3] Waiting for response...")
+            log("[3/3] RESPONSE: listening...")
+            t = time.time()
             response = self.authenticator.receive_response()
+            log(f"[3/3] RESPONSE: received ({time.time()-t:.1f}s)")
+            log(f"      response={response.hex()}")
 
             if self.stop_requested:
                 return
 
+            # Verify
             self.root.after(0, self._set_status, "verifying")
+            log("[3/3] VERIFY: checking HMAC-SHA256...")
+            t = time.time()
             success = self.authenticator.auth_protocol.verify_authentication(response)
+            log(f"[3/3] VERIFY: {'PASS' if success else 'FAIL'} ({time.time()-t:.3f}s)")
             self.authenticator.send_result(success)
+
+            log(f"=== TOTAL TIME: {time.time()-t_start:.1f}s ===")
 
             self.root.after(0, self.progress.stop)
             if success:
                 self.root.after(0, self._set_status, "success")
-                self.root.after(0, self._log, "\n🔓 ACCESS GRANTED")
+                log("ACCESS GRANTED")
                 self.authenticated = True
                 self.storage = SecureStorage(SHARED_KEY)
                 self.root.after(0, self._update_storage_state)
                 self.root.after(0, self._refresh_file_list)
             else:
                 self.root.after(0, self._set_status, "failed")
-                self.root.after(0, self._log, "\n🔒 ACCESS DENIED")
+                log("ACCESS DENIED")
 
             self.root.after(0, self._show_result, success)
 
@@ -387,9 +410,8 @@ class AuthGUI:
             if not self.stop_requested:
                 self.root.after(0, self.progress.stop)
                 self.root.after(0, self._set_status, "error", f"Error: {str(e)}")
-                self.root.after(0, self._log, f"\n❌ ERROR: {e}")
+                self.root.after(0, self._log, f"[{time.time()-t_start:5.1f}s] ERROR: {e}")
                 self.root.after(0, self._show_result, False)
-                # Try to send NACK on error
                 try:
                     if self.authenticator:
                         self.authenticator.send_result(False)
