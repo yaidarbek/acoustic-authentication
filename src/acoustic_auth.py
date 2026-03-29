@@ -134,6 +134,18 @@ class AcousticAuthenticator:
         bits = (bits + '0' * 64)[:64]
         response = bytes(int(bits[i:i+8], 2) for i in range(0, 64, 8))
         print(f'Received response: {response.hex()}')
+
+        # Debug: compare with expected
+        if self.auth_protocol.current_challenge:
+            expected = self.auth_protocol.crypto.compute_response(self.auth_protocol.current_challenge)
+            print(f'Expected response: {expected.hex()}')
+            print(f'Match: {response == expected}')
+            print(f'Received bits: {bits}')
+            expected_bits = "".join(format(b, "08b") for b in expected)
+            print(f'Expected bits: {expected_bits}')
+            diff = sum(1 for a, b in zip(bits, expected_bits) if a != b)
+            print(f'Bit errors: {diff}/64')
+
         print('Sending ACK after response...')
         self.tone_utils.play_tone(self.READY_FREQ, self.TONE_DURATION)
         print('✅ ACK sent')
