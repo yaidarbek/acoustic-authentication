@@ -1,12 +1,13 @@
 import tkinter as tk
 from tkinter import ttk, font, filedialog, messagebox
 import threading
+import time
 import sys
 import os
 
 # Add src/ to path when running from anywhere
 sys.path.insert(0, os.path.dirname(__file__))
-from acoustic_auth import AcousticAuthenticator
+from acoustic_auth import AcousticAuthenticator, SHARED_KEY
 from secure_storage import SecureStorage
 
 # --- Colours ---
@@ -311,10 +312,8 @@ class AuthGUI:
         """Simulate successful authentication for testing storage"""
         self._clear_log()
         self._log("TEST MODE: Simulating successful authentication...")
-        test_auth = AcousticAuthenticator()
-        shared_key = test_auth.auth_protocol.get_shared_key()
         self.authenticated = True
-        self.storage = SecureStorage(shared_key)
+        self.storage = SecureStorage(SHARED_KEY)
         self._update_storage_state()
         self._refresh_file_list()
         self._set_status("success", "Test Mode - Storage Unlocked")
@@ -377,8 +376,7 @@ class AuthGUI:
                 self.root.after(0, self._set_status, "success")
                 self.root.after(0, self._log, "\n🔓 ACCESS GRANTED")
                 self.authenticated = True
-                shared_key = self.authenticator.auth_protocol.get_shared_key()
-                self.storage = SecureStorage(shared_key)
+                self.storage = SecureStorage(SHARED_KEY)
                 self.root.after(0, self._update_storage_state)
                 self.root.after(0, self._refresh_file_list)
             else:
