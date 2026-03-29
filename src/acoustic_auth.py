@@ -71,8 +71,12 @@ class AcousticAuthenticator:
         print(f'Sending sync pattern: {SYNC_PATTERN}')
         self.fsk.transmit_data(SYNC_PATTERN)
         print('✅ Sync sent')
-
-    # -- Phase 3: Data slots --------------------------------------------
+        # Wait for iPhone ACK before sending challenge
+        print('Listening for ACK after sync...')
+        signal = self.tone_utils.record_audio(5.0)
+        if not self.tone_utils.detect_tone(signal, self.ACK_FREQ, threshold=10.0):
+            raise RuntimeError('No ACK received after sync')
+        print('✅ ACK received - iPhone ready for challenge')
 
     def send_challenge(self):
         """Send 32-bit FSK challenge"""
@@ -81,18 +85,31 @@ class AcousticAuthenticator:
         print(f'Challenge: {challenge.hex()}')
         bits = ''.join(format(b, '08b') for b in challenge)
         self.fsk.transmit_data(bits)
+        print('✅ Challenge sent')
+        # Wait for iPhone ACK before recording response
+        print('Listening for ACK after challenge...')
+        signal = self.tone_utils.record_audio(5.0)
+        if not self.tone_utils.detect_tone(signal, self.ACK_FREQ, threshold=10.0):
+            raise RuntimeError('No ACK received after challenge')
+        print('✅ ACK received - iPhone ready to respond')
         return challenge
+
+    # -- Phase 3: Data slots --------------------------------------------
 
     def receive_response(self):
         """Receive 64-bit FSK response from iPhone"""
         print('=== SLOT 2: RECEIVING RESPONSE ===')
-        duration = self.RESPONSE_DURATION + 2.0  # buffer
+        duration = self.RESPONSE_DURATION + 2.0
         print(f'Recording for {duration:.1f}s...')
         signal = self.fsk.record_data(duration)
         bits = self.fsk.decode_signal(signal, 64)
-        bits = (bits + '0' * 64)[:64]  # pad/truncate to 64 bits
+        bits = (bits + '0' * 64)[:64]
         response = bytes(int(bits[i:i+8], 2) for i in range(0, 64, 8))
         print(f'Received response: {response.hex()}')
+        # Send ACK to iPhone so it knows response was received
+        print('Sending ACK after response...')
+        self.tone_utils.play_tone(self.READY_FREQ, self.TONE_DURATION)
+        print('✅ ACK sent - iPhone can now listen for result')
         return response
 
     def send_result(self, success):
@@ -119,9 +136,6 @@ class AcousticAuthenticator:
                 return False
 
             self.send_sync()
-            # Wait for iPhone to finish processing sync before sending challenge
-            # = sync transmission duration + ACK tone duration (worst case timing)
-            time.sleep(self.SYNC_DURATION + self.TONE_DURATION)
             challenge = self.send_challenge()
             response = self.receive_response()
             success = self.auth_protocol.verify_authentication(response)

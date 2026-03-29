@@ -70,11 +70,13 @@ class AcousticAuthenticator: ObservableObject {
             updateState(.listeningSync)
             log("👂 Listening for sync packet...")
             try await listenForSync()
-            log("✅ Sync received - challenge coming immediately")
+            log("✅ Sync received")
 
-            // Wait for laptop to finish sync transmission and start challenge
-            let syncWait = Double(7 + syncBits) * fskDecoder.symbolDuration + 2.0
-            try await Task.sleep(nanoseconds: UInt64(syncWait * 1_000_000_000))
+            // Send ACK - tells laptop we decoded sync and are ready for challenge
+            log("📡 Sending ACK after sync...")
+            try await playTone(frequency: ackFreq, duration: 1.0)
+            log("✅ ACK sent - waiting for challenge")
+
             // Phase 3 Slot 1: Record challenge
             updateState(.listening)
             log("🎧 Recording FSK challenge (32 bits)...")
@@ -91,6 +93,11 @@ class AcousticAuthenticator: ObservableObject {
             }
             log("✅ Challenge: \(challenge.hex.prefix(8))...")
 
+            // Send ACK - tells laptop we decoded challenge and are ready to respond
+            log("📡 Sending ACK after challenge...")
+            try await playTone(frequency: ackFreq, duration: 1.0)
+            log("✅ ACK sent - computing response")
+
             // Compute response
             updateState(.computing)
             log("🔐 Computing truncated HMAC-SHA256...")
@@ -103,10 +110,15 @@ class AcousticAuthenticator: ObservableObject {
             try await transmitBits(data: response)
             log("✅ Response transmitted")
 
-            // Wait for laptop to finish recording response, verify, and play result tone
-            // Buffer = laptop's full response recording duration (response transmission + 2.0s buffer)
-            let resultWait = Double(7 + 64) * fskDecoder.symbolDuration + 2.0 + 2.0
-            try await Task.sleep(nanoseconds: UInt64(resultWait * 1_000_000_000))
+            // Listen for ACK from laptop - confirms response received, ready for result
+            log("👂 Waiting for ACK from laptop...")
+            let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
+            let ackSamples = try await recordRaw(duration: 5.0)
+            let ackDetected = fskDecoder.detectTone(frequency: readyFreq, in: ackSamples, threshold: 3.0, actualSampleRate: actualRate)
+            if !ackDetected {
+                throw AuthError.decodingFailed("No ACK received after response")
+            }
+            log("✅ ACK received - laptop got response")
 
             // Phase 3 Slot 3: Listen for result
             updateState(.listeningResult)

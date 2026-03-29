@@ -351,8 +351,6 @@ class AuthGUI:
             self.root.after(0, self._set_status, "transmitting")
             self.root.after(0, self._log, "[2/3] Sending sync + challenge...")
             self.authenticator.send_sync()
-            # Wait for iPhone to finish processing sync before sending challenge
-            time.sleep(self.authenticator.SYNC_DURATION + self.authenticator.TONE_DURATION)
             challenge = self.authenticator.send_challenge()
             self.root.after(0, self._log, f"      Challenge: {challenge.hex()}")
 
