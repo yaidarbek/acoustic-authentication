@@ -11,7 +11,7 @@ class FSKDecoder {
     let sampleRate: Double = 44100.0
     let f0: Double = 7000.0    // Binary '0' — 7 kHz
     let f1: Double = 9000.0    // Binary '1' — 9 kHz
-    let symbolDuration: Double = 0.15  // 150ms — increased for reverb tolerance
+    let symbolDuration: Double = 0.1  // 100 ms per symbol
     let bandpassLow: Double  = 6000.0
     let bandpassHigh: Double = 10000.0
 
@@ -113,57 +113,50 @@ class FSKDecoder {
     func decodeSignal(signal: [Float], expectedBits: Int) -> String {
         let startTime = Date()
         print("[FSKDecoder] Starting decode: \(signal.count) samples, expecting \(expectedBits) bits")
+        
+        // Step 1: AGC
+        let agcStart = Date()
+        print("[FSKDecoder] Applying AGC normalization...")
+        let normalized = applyAGC(samples: signal)
+        let agcTime = Date().timeIntervalSince(agcStart)
+        print("[FSKDecoder] AGC complete in \(String(format: "%.3f", agcTime))s")
 
-        // Step 1: Signal quality check
-        let maxAmp = signal.map { abs($0) }.max() ?? 0
-        print("[FSKDecoder] Signal max amplitude: \(String(format: "%.4f", maxAmp))")
-        guard maxAmp > 0.01 else {
-            print("[FSKDecoder] Signal too weak, skipping decode")
-            return ""
-        }
-
-        // Step 2: Barker sync on raw signal — find frame start first
+        // Step 2: Barker sync — find frame start
         let syncStart = Date()
         print("[FSKDecoder] Searching for Barker-7 sync pattern...")
         let barkerLen = barker.count * samplesPerSymbol
-        let frameStart = barkerSync(signal: signal)
+        let frameStart = barkerSync(signal: normalized)
         let dataStart = frameStart + barkerLen
         let syncTime = Date().timeIntervalSince(syncStart)
         print("[FSKDecoder] Frame start found at sample \(frameStart), data starts at \(dataStart) (\(String(format: "%.3f", syncTime))s)")
 
-        // Step 3: Windowed AGC — normalize only the detected signal window
-        let windowStart = max(0, frameStart)
-        let windowEnd   = min(signal.count, dataStart + expectedBits * samplesPerSymbol)
-        let window = Array(signal[windowStart..<windowEnd])
-        let normalizedWindow = applyAGC(samples: window)
-        let windowedDataStart = dataStart - windowStart
-
-        // Step 4: Goertzel demodulation on normalized window
+        // Step 3: Goertzel demodulation
         let demodStart = Date()
         print("[FSKDecoder] Demodulating \(expectedBits) bits using Goertzel algorithm...")
         var decodedBits = ""
 
         for i in 0..<expectedBits {
-            let symbolStart = windowedDataStart + i * samplesPerSymbol
-            let symbolEnd   = symbolStart + samplesPerSymbol
+            let symbolStart = dataStart + i * samplesPerSymbol
+            let symbolEnd = symbolStart + samplesPerSymbol
 
-            guard symbolEnd <= normalizedWindow.count else {
+            guard symbolEnd <= normalized.count else { 
                 print("[FSKDecoder] Ran out of samples at bit \(i)")
-                break
+                break 
             }
 
-            let symbolData = Array(normalizedWindow[symbolStart..<symbolEnd])
+            let symbolData = Array(normalized[symbolStart..<symbolEnd])
             let powerF0 = goertzelDetect(samples: symbolData, frequency: f0)
             let powerF1 = goertzelDetect(samples: symbolData, frequency: f1)
-
+            
             let bit = powerF1 > powerF0 ? "1" : "0"
             decodedBits += bit
-
+            
+            // Log every 32 bits
             if (i + 1) % 32 == 0 {
                 print("[FSKDecoder] Decoded \(i + 1)/\(expectedBits) bits: ...\(decodedBits.suffix(16))")
             }
         }
-
+        
         let demodTime = Date().timeIntervalSince(demodStart)
         let totalTime = Date().timeIntervalSince(startTime)
         print("[FSKDecoder] Demodulation complete in \(String(format: "%.3f", demodTime))s")

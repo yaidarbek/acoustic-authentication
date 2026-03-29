@@ -8,7 +8,7 @@ class WorkingFSK:
         self.sample_rate = 44100
         self.f0 = 7000   # Binary '0' - 7 kHz
         self.f1 = 9000   # Binary '1' - 9 kHz
-        self.symbol_duration = 0.15  # 150ms - increased for reverb tolerance
+        self.symbol_duration = 0.1  # 100ms for better detection
         self.amplitude = 0.1
         
         self.audio = pyaudio.PyAudio()

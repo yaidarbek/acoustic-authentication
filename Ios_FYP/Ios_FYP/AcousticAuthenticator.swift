@@ -35,10 +35,6 @@ class AcousticAuthenticator: ObservableObject {
     private let readyFreq: Double = 11000.0  // 11 kHz - READY beacon from laptop
     private let ackFreq:   Double = 13000.0  // 13 kHz - ACK to laptop
 
-    // Sentinel
-    private let sentinelFreq: Double = 5000.0  // 5 kHz - start sentinel before FSK
-    private let maxRetries = 3
-
     // Laptop ACK listen window — iPhone recording must cover this worst-case delay
     private let laptopAckWindow = 5.0
 
@@ -76,18 +72,7 @@ class AcousticAuthenticator: ObservableObject {
             // Phase 2: Listen for sync packet
             updateState(.listeningSync)
             log("👂 Listening for sync packet...")
-            var syncDecoded = false
-            for attempt in 1...maxRetries {
-                do {
-                    try await listenForSync()
-                    syncDecoded = true
-                    break
-                } catch {
-                    log("⚠️ Sync attempt \(attempt)/\(maxRetries) failed: \(error.localizedDescription)")
-                    if attempt == maxRetries { throw error }
-                }
-            }
-            guard syncDecoded else { throw AuthError.decodingFailed("Sync failed after \(maxRetries) attempts") }
+            try await listenForSync()
             log("✅ Sync received")
 
             // Send ACK - tells laptop we decoded sync and are ready for challenge
@@ -98,16 +83,7 @@ class AcousticAuthenticator: ObservableObject {
             // Phase 3 Slot 1: Record challenge
             updateState(.listening)
             log("🎧 Recording FSK challenge (32 bits)...")
-            var challengeAudio: [Float] = []
-            for attempt in 1...maxRetries {
-                do {
-                    challengeAudio = try await recordSlot(bits: challengeBits)
-                    break
-                } catch {
-                    log("⚠️ Challenge attempt \(attempt)/\(maxRetries) failed: \(error.localizedDescription)")
-                    if attempt == maxRetries { throw error }
-                }
-            }
+            let challengeAudio = try await recordSlot(bits: challengeBits)
             log("✅ Recorded \(challengeAudio.count) samples")
 
             // Decode challenge
@@ -178,21 +154,10 @@ class AcousticAuthenticator: ObservableObject {
     // MARK: - Phase 2: Sync packet
 
     private func listenForSync() async throws {
-        // Wait for sentinel before recording FSK
-        log("👂 Waiting for sentinel before sync...")
-        let sentinelDetected = try await listenForTone(frequency: sentinelFreq, maxDuration: laptopAckWindow + 2.0)
-        guard sentinelDetected else {
-            throw AuthError.decodingFailed("Sentinel not detected before sync")
-        }
-        log("✅ Sentinel detected - recording sync")
-
-        let duration = Double(7 + syncBits) * fskDecoder.symbolDuration + 1.0
+        // Buffer = laptop's ACK listen window (worst case sync arrives after full 5s window)
+        let duration = Double(7 + syncBits) * fskDecoder.symbolDuration + laptopAckWindow
         let samples  = try await recordResampled(duration: duration)
         let bits     = fskDecoder.decodeSignal(signal: samples, expectedBits: syncBits)
-
-        guard !bits.isEmpty else {
-            throw AuthError.decodingFailed("Sync signal too weak")
-        }
         guard String(bits.prefix(syncBits)) == String(syncPattern.prefix(syncBits)) else {
             throw AuthError.decodingFailed("Sync pattern mismatch: got \(bits.prefix(16))")
         }
@@ -201,15 +166,8 @@ class AcousticAuthenticator: ObservableObject {
     // MARK: - Phase 3: Record a data slot
 
     private func recordSlot(bits: Int) async throws -> [Float] {
-        // Wait for sentinel before recording FSK
-        log("👂 Waiting for sentinel before challenge...")
-        let sentinelDetected = try await listenForTone(frequency: sentinelFreq, maxDuration: laptopAckWindow + 2.0)
-        guard sentinelDetected else {
-            throw AuthError.decodingFailed("Sentinel not detected before challenge")
-        }
-        log("✅ Sentinel detected - recording challenge")
-
-        let duration = Double(7 + bits) * fskDecoder.symbolDuration + 1.0
+        // Buffer = laptop's ACK listen window (worst case challenge arrives after full 5s window)
+        let duration = Double(7 + bits) * fskDecoder.symbolDuration + laptopAckWindow
         return try await recordResampled(duration: duration)
     }
 
