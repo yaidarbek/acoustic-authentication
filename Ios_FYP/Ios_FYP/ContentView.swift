@@ -4,12 +4,7 @@ struct ContentView: View {
 
     // MARK: - Shared key (in production: load from Keychain)
     // Must match the key used on the laptop Python side
-    @StateObject private var authenticator: AcousticAuthenticator
-    
-    init() {
-        let key = "0000000000000000000000000000000000000000000000000000000000000000"
-        _authenticator = StateObject(wrappedValue: AcousticAuthenticator(sharedKeyHex: key))
-    }
+    @StateObject private var authenticator = AcousticAuthenticator()
 
     // MARK: - Body
 

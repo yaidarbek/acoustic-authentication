@@ -28,7 +28,6 @@ class AcousticAuthenticator: ObservableObject {
 
     // Sizes
     private let challengeBits = 32
-    private let responseBits  = 64
     private let syncBits      = 16
     private let syncPattern   = "1010101010101010"
 
@@ -92,14 +91,13 @@ class AcousticAuthenticator: ObservableObject {
             // Compute response
             updateState(.computing)
             log("🔐 Computing truncated HMAC-SHA256...")
-            let fullResponse = cryptoEngine.computeResponse(challenge: challenge)
-            let response = fullResponse.prefix(8)  // truncate to 64 bits
+            let response = cryptoEngine.computeResponse(challenge: challenge)
             log("✅ Response: \(response.hex.prefix(8))...")
 
             // Phase 3 Slot 2: Transmit response
             updateState(.transmitting)
             log("📡 Transmitting FSK response (64 bits)...")
-            try await transmitBits(data: Data(response))
+            try await transmitBits(data: response)
             log("✅ Response transmitted")
 
             // Phase 3 Slot 3: Listen for result
@@ -146,7 +144,7 @@ class AcousticAuthenticator: ObservableObject {
         let bits     = fskDecoder.decodeSignal(signal: samples, expectedBits: syncBits)
 
         // Verify sync pattern
-        guard bits.prefix(syncBits) == syncPattern.prefix(syncBits) else {
+        guard String(bits.prefix(syncBits)) == String(syncPattern.prefix(syncBits)) else {
             throw AuthError.decodingFailed("Sync pattern mismatch: got \(bits.prefix(16))")
         }
     }
@@ -210,6 +208,7 @@ class AcousticAuthenticator: ObservableObject {
                             resumed = true
                             self.recordingEngine.inputNode.removeTap(onBus: 0)
                             self.recordingEngine.stop()
+                            self.recordingEngine.reset()
                             try? session.setActive(false)
                             continuation.resume(returning: Array(samples.prefix(totalSamples)))
                         }
@@ -223,8 +222,9 @@ class AcousticAuthenticator: ObservableObject {
                             if self.recordingEngine.isRunning {
                                 self.recordingEngine.inputNode.removeTap(onBus: 0)
                                 self.recordingEngine.stop()
-                                try? session.setActive(false)
                             }
+                            self.recordingEngine.reset()
+                            try? session.setActive(false)
                             continuation.resume(returning: samples)
                         }
                     }
@@ -263,33 +263,39 @@ class AcousticAuthenticator: ObservableObject {
 
     private func playSignal(_ samples: [Float]) async throws {
         return try await withCheckedThrowingContinuation { continuation in
-            do {
-                let session = AVAudioSession.sharedInstance()
-                try session.setActive(false)
-                try session.setCategory(.playback, mode: .default, options: [])
-                try session.setActive(true)
+            Task { @MainActor in
+                do {
+                    let session = AVAudioSession.sharedInstance()
+                    try session.setActive(false)
+                    try session.setCategory(.playback, mode: .default, options: [])
+                    try session.setActive(true)
 
-                let format = AVAudioFormat(standardFormatWithSampleRate: fskDecoder.sampleRate, channels: 1)!
-                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else {
-                    throw AuthError.transmissionFailed("Could not create audio buffer")
+                    if self.playbackEngine.isRunning { self.playbackEngine.stop() }
+                    self.playbackEngine.reset()
+
+                    let format = AVAudioFormat(standardFormatWithSampleRate: self.fskDecoder.sampleRate, channels: 1)!
+                    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else {
+                        throw AuthError.transmissionFailed("Could not create audio buffer")
+                    }
+                    buffer.frameLength = AVAudioFrameCount(samples.count)
+                    let ch = buffer.floatChannelData![0]
+                    for (i, s) in samples.enumerated() { ch[i] = s }
+
+                    let playerNode = AVAudioPlayerNode()
+                    self.playbackEngine.attach(playerNode)
+                    self.playbackEngine.connect(playerNode, to: self.playbackEngine.mainMixerNode, format: format)
+                    try self.playbackEngine.start()
+
+                    playerNode.scheduleBuffer(buffer) {
+                        self.playbackEngine.stop()
+                        self.playbackEngine.reset()
+                        try? session.setActive(false)
+                        continuation.resume()
+                    }
+                    playerNode.play()
+                } catch {
+                    continuation.resume(throwing: error)
                 }
-                buffer.frameLength = AVAudioFrameCount(samples.count)
-                let ch = buffer.floatChannelData![0]
-                for (i, s) in samples.enumerated() { ch[i] = s }
-
-                let playerNode = AVAudioPlayerNode()
-                playbackEngine.attach(playerNode)
-                playbackEngine.connect(playerNode, to: playbackEngine.mainMixerNode, format: format)
-                try playbackEngine.start()
-
-                playerNode.scheduleBuffer(buffer) {
-                    self.playbackEngine.stop()
-                    try? session.setActive(false)
-                    continuation.resume()
-                }
-                playerNode.play()
-            } catch {
-                continuation.resume(throwing: error)
             }
         }
     }

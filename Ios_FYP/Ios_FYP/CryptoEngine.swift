@@ -37,7 +37,7 @@ class CryptoEngine {
             for: challenge,
             using: sharedKey
         )
-        return Data(mac)
+        return Data(mac).prefix(8)  // truncate to 64 bits to match Python side
     }
 
     /// Verify a received response against expected value
