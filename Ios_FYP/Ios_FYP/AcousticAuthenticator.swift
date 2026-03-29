@@ -75,7 +75,6 @@ class AcousticAuthenticator: ObservableObject {
             // Wait for laptop to finish sync transmission and start challenge
             let syncWait = Double(7 + syncBits) * fskDecoder.symbolDuration + 2.0
             try await Task.sleep(nanoseconds: UInt64(syncWait * 1_000_000_000))
-
             // Phase 3 Slot 1: Record challenge
             updateState(.listening)
             log("🎧 Recording FSK challenge (32 bits)...")
@@ -105,6 +104,7 @@ class AcousticAuthenticator: ObservableObject {
             log("✅ Response transmitted")
 
             // Wait for laptop to finish recording response, verify, and play result tone
+            // Buffer = laptop's full response recording duration (response transmission + 2.0s buffer)
             let resultWait = Double(7 + 64) * fskDecoder.symbolDuration + 2.0 + 2.0
             try await Task.sleep(nanoseconds: UInt64(resultWait * 1_000_000_000))
 
@@ -146,12 +146,12 @@ class AcousticAuthenticator: ObservableObject {
     // MARK: - Phase 2: Sync packet
 
     private func listenForSync() async throws {
-        // Record enough for sync packet: (7 + 16) symbols * 100ms + 2s buffer
-        let duration = Double(7 + syncBits) * fskDecoder.symbolDuration + 2.0
+        // Buffer = ackToneDuration (worst case laptop detects ACK at start of tone)
+        let buffer = 1.0  // ackToneDuration
+        let duration = Double(7 + syncBits) * fskDecoder.symbolDuration + buffer
         let samples  = try await recordResampled(duration: duration)
         let bits     = fskDecoder.decodeSignal(signal: samples, expectedBits: syncBits)
 
-        // Verify sync pattern
         guard String(bits.prefix(syncBits)) == String(syncPattern.prefix(syncBits)) else {
             throw AuthError.decodingFailed("Sync pattern mismatch: got \(bits.prefix(16))")
         }
@@ -160,8 +160,9 @@ class AcousticAuthenticator: ObservableObject {
     // MARK: - Phase 3: Record a data slot
 
     private func recordSlot(bits: Int) async throws -> [Float] {
-        // Exact slot duration: (7 barker + data bits) * 100ms + 2s buffer
-        let duration = Double(7 + bits) * fskDecoder.symbolDuration + 2.0
+        // Buffer = sync transmission duration (worst case sync still transmitting when we start)
+        let syncTransmitDuration = Double(7 + syncBits) * fskDecoder.symbolDuration
+        let duration = Double(7 + bits) * fskDecoder.symbolDuration + syncTransmitDuration
         return try await recordResampled(duration: duration)
     }
 
