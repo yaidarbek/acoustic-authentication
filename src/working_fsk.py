@@ -6,9 +6,8 @@ from scipy.signal import butter, filtfilt
 class WorkingFSK:
     def __init__(self):
         self.sample_rate = 44100
-        # Use lower frequencies for better hardware compatibility
-        self.f0 = 8000   # Binary '0' - 8 kHz
-        self.f1 = 10000  # Binary '1' - 10 kHz
+        self.f0 = 7000   # Binary '0' - 7 kHz
+        self.f1 = 9000   # Binary '1' - 9 kHz
         self.symbol_duration = 0.1  # 100ms for better detection
         self.amplitude = 0.1
         
@@ -111,8 +110,8 @@ class WorkingFSK:
         Passband: 7-11 kHz (covers f0=8kHz and f1=10kHz with margin)
         """
         nyq = self.sample_rate / 2
-        low = 7000 / nyq
-        high = 11000 / nyq
+        low = 6000 / nyq
+        high = 10000 / nyq
         b, a = butter(4, [low, high], btype='band')
         return filtfilt(b, a, signal).astype(np.float32)
 

@@ -17,7 +17,7 @@ class CryptographicCore:
     def __init__(self, shared_key: Optional[bytes] = None):
         # Use provided key or generate new one
         self.shared_key = shared_key or self._generate_shared_key()
-        self.challenge_size = 16  # 128-bit nonce
+        self.challenge_size = 4   # 32-bit challenge
         self.used_challenges = self._load_used_challenges()  # Persistent replay attack prevention
         
     def _generate_shared_key(self) -> bytes:
@@ -56,14 +56,15 @@ class CryptographicCore:
     
     def compute_response(self, challenge: bytes) -> bytes:
         """
-        Compute HMAC-SHA256 response to challenge
-        R_expected = HMAC(K, C, digestmod='sha256')
+        Compute truncated HMAC-SHA256 response to challenge
+        Truncated to 8 bytes (64 bits) for faster acoustic transmission
         """
-        return hmac.new(
+        full_hmac = hmac.new(
             self.shared_key,
             challenge,
             digestmod=hashlib.sha256
         ).digest()
+        return full_hmac[:8]  # truncate to 64 bits
     
     def verify_response(self, challenge: bytes, response: bytes) -> bool:
         """

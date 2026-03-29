@@ -3,320 +3,141 @@ from crypto_core import AuthenticationProtocol
 from enhanced_fsk import EnhancedFSK
 from tone_utils import ToneUtils
 
+SHARED_KEY = bytes.fromhex('0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0')
+SYNC_PATTERN = '1010101010101010'  # 16-bit fixed sync pattern
+
 class AcousticAuthenticator:
     """
-    Integrated acoustic authentication system with handshaking protocol
-    Combines FSK audio transmission with HMAC-SHA256 cryptography
-    Full stack: FSK -> Protocol Layer (framing + CRC-16) -> HMAC-SHA256
-    
+    Redesigned acoustic authentication system
+
     Protocol flow:
-    1. Laptop sends READY tone (12 kHz)
-    2. iPhone responds with ACK tone (14 kHz)
-    3. Laptop sends challenge (FSK)
-    4. iPhone sends response (FSK)
-    5. Laptop sends ACK (12 kHz) or NACK (6 kHz)
+    Phase 1 - Beacon:
+        Laptop broadcasts READY (11kHz, 1s) repeatedly
+        iPhone detects in real-time chunks, responds with ACK (13kHz, 1s)
+        Laptop detects ACK, moves to Phase 2
+
+    Phase 2 - Sync:
+        Laptop sends FSK sync packet (16 bits fixed pattern)
+        iPhone decodes sync, knows challenge starts immediately after
+
+    Phase 3 - Data slots:
+        Slot 1: Laptop sends FSK challenge (32 bits)
+        Slot 2: iPhone sends FSK response (64 bits truncated HMAC)
+        Slot 3: Laptop sends READY (11kHz) = success, silence = fail
     """
 
-    def __init__(self, shared_key=None):
-        self.auth_protocol = AuthenticationProtocol(shared_key)
+    def __init__(self):
+        self.auth_protocol = AuthenticationProtocol(SHARED_KEY)
+        self.auth_protocol.session_timeout = 60
         self.fsk = EnhancedFSK()
         self.tone_utils = ToneUtils()
-        # Extend session timeout for testing
-        self.auth_protocol.session_timeout = 60  # 60 seconds for testing
-        
-        # Handshaking tone frequencies
-        self.READY_FREQ = 12000.0   # 12 kHz - READY from laptop
-        self.ACK_FREQ = 14000.0     # 14 kHz - ACK from iPhone
-        self.ACKACK_FREQ = 16000.0  # 16 kHz - ACK-ACK from laptop
-        self.RTS_FREQ = 3000.0      # 3 kHz - Ready-To-Receive from iPhone
-        self.NACK_FREQ = 6000.0     # 6 kHz - NACK from laptop
-        self.TONE_DURATION = 0.5    # 0.5 seconds
-        self.RTS_DURATION = 2.0     # 2 seconds - long enough for reliable detection
-        self.SUCCESS_TONE_DURATION = 1.0  # 1 second for final ACK/NACK
 
-    def bytes_to_bits(self, data: bytes) -> str:
-        """Convert bytes to binary string"""
-        return ''.join(format(byte, '08b') for byte in data)
+        self.READY_FREQ       = 11000.0  # 11 kHz - READY beacon
+        self.ACK_FREQ         = 13000.0  # 13 kHz - ACK from iPhone
+        self.TONE_DURATION    = 1.0      # 1s for beacon/ACK
+        self.SUCCESS_DURATION = 1.0      # 1s for result tone
 
-    def bits_to_bytes(self, bits: str) -> bytes:
-        """Convert binary string to bytes"""
-        while len(bits) % 8 != 0:
-            bits += '0'
-        return bytes(int(bits[i:i+8], 2) for i in range(0, len(bits), 8))
-    
-    # ========== Handshaking Functions ==========
-    
-    def send_ready_tone(self):
-        """Laptop: Send READY tone to signal readiness"""
-        print("📡 Sending READY tone (12 kHz)...")
-        self.tone_utils.play_tone(self.READY_FREQ, self.TONE_DURATION)
-        print("✅ READY tone sent")
-    
-    def listen_for_ack(self, timeout=10.0):
-        """Laptop: Listen for ACK tone from iPhone"""
-        print(f"👂 Listening for ACK tone ({timeout}s timeout)...")
-        signal = self.tone_utils.record_audio(timeout)
-        detected = self.tone_utils.detect_tone(signal, self.ACK_FREQ, threshold=10.0)
-        
-        if detected:
-            print("✅ ACK tone detected - iPhone connected")
-            return True
-        else:
-            print("❌ ACK tone not detected")
-            return False
-    
-    def send_ackack_tone(self):
-        """Laptop: Send ACK-ACK tone (16 kHz) to confirm ACK received, signals iPhone to start recording"""
-        print("📡 Sending ACK-ACK tone (16 kHz) - starting challenge now...")
-        self.tone_utils.play_tone(self.ACKACK_FREQ, self.TONE_DURATION)
-        print("✅ ACK-ACK sent")
+        # Slot durations (symbols * 100ms)
+        self.SYNC_DURATION      = (7 + 16) * self.fsk.symbol_duration  # 2.3s
+        self.CHALLENGE_DURATION = (7 + 32) * self.fsk.symbol_duration  # 3.9s
+        self.RESPONSE_DURATION  = (7 + 64) * self.fsk.symbol_duration  # 7.1s
 
-    def listen_for_rts(self):
-        """Laptop: Listen for Ready-To-Receive tone from iPhone (3 kHz)"""
-        print("👂 Listening for RTS tone from iPhone (3 kHz)...")
-        signal = self.tone_utils.record_audio(15.0)
-        detected = self.tone_utils.detect_tone(signal, self.RTS_FREQ, threshold=10.0)
-        if detected:
-            print("✅ RTS tone detected - iPhone is ready, waiting 2.5s before sending challenge...")
-            time.sleep(2.5)  # Must be >= RTS duration (2s) + iPhone session switch time
-            return True
-        else:
-            print("❌ RTS tone not detected")
-            return False
+    # -- Phase 1: Beacon ------------------------------------------------
 
-    def send_ack_tone(self):
-        """Laptop: Send ACK tone (success)"""
-        print("📡 Sending ACK tone (authentication successful)...")
-        self.tone_utils.play_tone(self.READY_FREQ, self.SUCCESS_TONE_DURATION)
-        print("✅ ACK sent")
-    
-    def send_nack_tone(self):
-        """Laptop: Send NACK tone (failure)"""
-        print("📡 Sending NACK tone (authentication failed)...")
-        self.tone_utils.play_tone(self.NACK_FREQ, self.SUCCESS_TONE_DURATION)
-        print("✅ NACK sent")
-    
-    # ========== Authentication Functions ==========
-    
-    def transmit_challenge(self) -> bytes:
-        """
-        Laptop: Generate and transmit challenge acoustically via protocol layer
-        Returns the challenge for verification
-        """
-        print("=== INITIATING ACOUSTIC AUTHENTICATION ===")
+    def run_beacon(self, max_attempts=20):
+        """Broadcast READY beacon until iPhone ACKs"""
+        print('=== PHASE 1: BEACON ===')
+        for attempt in range(max_attempts):
+            print(f'Attempt {attempt+1}/{max_attempts}: sending READY beacon (11kHz)...')
+            self.tone_utils.play_tone(self.READY_FREQ, self.TONE_DURATION)
 
+            # Listen for ACK during 3s window
+            print('Listening for ACK (13kHz)...')
+            signal = self.tone_utils.record_audio(3.0)
+            if self.tone_utils.detect_tone(signal, self.ACK_FREQ, threshold=10.0):
+                print('✅ ACK detected - iPhone connected')
+                return True
+
+            print('No ACK, retrying...')
+
+        print('❌ Beacon failed - no response from iPhone')
+        return False
+
+    # -- Phase 2: Sync --------------------------------------------------
+
+    def send_sync(self):
+        """Send FSK sync packet so iPhone knows challenge is coming"""
+        print('=== PHASE 2: SYNC ===')
+        print(f'Sending sync pattern: {SYNC_PATTERN}')
+        self.fsk.transmit_data(SYNC_PATTERN)
+        print('✅ Sync sent')
+
+    # -- Phase 3: Data slots --------------------------------------------
+
+    def send_challenge(self):
+        """Send 32-bit FSK challenge"""
+        print('=== SLOT 1: CHALLENGE ===')
         challenge = self.auth_protocol.initiate_authentication()
-        print(f"Challenge: {challenge.hex()}")
-
-        # Transmit via EnhancedFSK — applies framing + CRC-16 automatically
-        print("Transmitting challenge acoustically (with protocol layer)...")
-        self.fsk.transmit_data_with_protocol(challenge)
-
+        print(f'Challenge: {challenge.hex()}')
+        bits = ''.join(format(b, '08b') for b in challenge)
+        self.fsk.transmit_data(bits)
         return challenge
 
-    def receive_challenge(self, duration=None) -> bytes:
-        """
-        iPhone: Record and decode challenge via protocol layer
-        Returns decoded challenge
-        """
-        print("=== RECEIVING ACOUSTIC CHALLENGE ===")
-
-        # Challenge is 16 bytes + protocol overhead (5 bytes) = 21 bytes = 168 bits
-        if duration is None:
-            frame_bits = (16 + 5) * 8  # payload + protocol overhead
-            duration = frame_bits * self.fsk.symbol_duration + 1.0
-
-        print(f"Recording for {duration:.1f} seconds...")
-        rx_stats = self.fsk.receive_data_with_protocol(expected_frames=1, timeout_per_frame=duration)
-
-        if not rx_stats['successful_frames']:
-            raise RuntimeError("Failed to receive challenge")
-
-        challenge = rx_stats['recovered_data']
-        print(f"Received challenge: {challenge.hex()}")
-        return challenge
-
-    def compute_and_transmit_response(self, challenge: bytes):
-        """
-        iPhone: Compute HMAC response and transmit back via protocol layer
-        """
-        print("=== COMPUTING AND TRANSMITTING RESPONSE ===")
-
-        response = self.auth_protocol.process_challenge(challenge)
-        print(f"Response: {response.hex()}")
-
-        # Transmit via EnhancedFSK — applies framing + CRC-16 automatically
-        print("Transmitting response acoustically (with protocol layer)...")
-        self.fsk.transmit_data_with_protocol(response)
-
+    def receive_response(self):
+        """Receive 64-bit FSK response from iPhone"""
+        print('=== SLOT 2: RECEIVING RESPONSE ===')
+        duration = self.RESPONSE_DURATION + 2.0  # buffer
+        print(f'Recording for {duration:.1f}s...')
+        signal = self.fsk.record_data(duration)
+        bits = self.fsk.decode_signal(signal, 64)
+        bits = (bits + '0' * 64)[:64]  # pad/truncate to 64 bits
+        response = bytes(int(bits[i:i+8], 2) for i in range(0, 64, 8))
+        print(f'Received response: {response.hex()}')
         return response
 
-    def receive_and_verify_response(self, duration=None) -> bool:
-        """
-        Laptop: Receive response via protocol layer and verify authentication
-        """
-        print("=== RECEIVING AND VERIFYING RESPONSE ===")
+    def send_result(self, success):
+        """Send result: READY tone = success, silence = fail"""
+        print('=== SLOT 3: RESULT ===')
+        if success:
+            print('📡 Sending SUCCESS tone (11kHz)...')
+            self.tone_utils.play_tone(self.READY_FREQ, self.SUCCESS_DURATION)
+            print('🔓 ACCESS GRANTED')
+        else:
+            print('🔒 ACCESS DENIED - sending silence')
+            time.sleep(self.SUCCESS_DURATION)
 
-        # Response is 32 bytes + protocol overhead (5 bytes) = 37 bytes = 296 bits
-        if duration is None:
-            frame_bits = (32 + 5) * 8
-            duration = frame_bits * self.fsk.symbol_duration + 1.0
+    # -- Full authentication flow ---------------------------------------
 
-        print(f"Recording for {duration:.1f} seconds...")
-        rx_stats = self.fsk.receive_data_with_protocol(expected_frames=1, timeout_per_frame=duration)
+    def authenticate(self):
+        """Run full authentication protocol"""
+        print('\n' + '='*60)
+        print('ACOUSTIC AUTHENTICATION SYSTEM')
+        print('='*60 + '\n')
 
-        if not rx_stats['successful_frames']:
-            print("Failed to receive response")
-            return False
-
-        received_response = rx_stats['recovered_data']
-        print(f"Received response: {received_response.hex()}")
-
-        return self.auth_protocol.verify_authentication(received_response)
-    
-    def authenticate_with_handshake(self):
-        """
-        Laptop: Full authentication with handshaking protocol
-        
-        Flow:
-        1. Send READY tone and wait for ACK
-        2. Send challenge
-        3. Receive and verify response
-        4. Send ACK/NACK confirmation
-        
-        Returns:
-            True if authentication successful, False otherwise
-        """
-        print("=== ACOUSTIC AUTHENTICATION WITH HANDSHAKING ===")
-        
         try:
-            # Step 1: Handshake - send READY and wait for ACK
-            print("\n--- Step 1: Establishing Connection ---")
-            max_attempts = 15  # Try for 30 seconds (15 attempts * 2s)
-            connected = False
-            
-            for attempt in range(max_attempts):
-                print(f"\nAttempt {attempt + 1}/{max_attempts}")
-                self.send_ready_tone()
-                time.sleep(0.5)  # Brief pause
-                
-                if self.listen_for_ack(timeout=12.0):
-                    connected = True
-                    self.send_ackack_tone()
-                    if not self.listen_for_rts():
-                        print("❌ iPhone did not send RTS, retrying...")
-                        connected = False
-                        continue
-                    break
-                    
-                print("No ACK received, retrying...")
-                time.sleep(0.5)
-            
-            if not connected:
-                print("❌ Connection failed - iPhone did not respond")
+            if not self.run_beacon():
                 return False
-            
-            print("✅ Connection established")
-            time.sleep(0.5)  # Brief pause before challenge
-            
-            # Step 2: Send challenge
-            print("\n--- Step 2: Sending Challenge ---")
-            challenge = self.transmit_challenge()
-            time.sleep(0.5)
-            
-            # Step 3: Receive and verify response
-            print("\n--- Step 3: Receiving Response ---")
-            success = self.receive_and_verify_response()
-            time.sleep(0.5)
-            
-            # Step 4: Send confirmation
-            print("\n--- Step 4: Sending Confirmation ---")
-            if success:
-                self.send_ack_tone()
-                print("\n🔓 ACCESS GRANTED - Authentication Successful!")
-            else:
-                self.send_nack_tone()
-                print("\n🔒 ACCESS DENIED - Authentication Failed!")
-            
-            return success
-            
-        except Exception as e:
-            print(f"\n❌ Authentication error: {e}")
-            try:
-                self.send_nack_tone()
-            except:
-                pass
-            return False
-    
-    def full_authentication_test(self):
-        """
-        Test complete authentication cycle
-        Simulates laptop <-> iPhone communication
-        Full stack: HMAC-SHA256 -> Protocol Layer (framing + CRC-16) -> FSK audio
-        """
-        print("=== FULL ACOUSTIC AUTHENTICATION TEST ===")
 
-        try:
-            # Step 1: Laptop generates and transmits challenge
-            challenge = self.transmit_challenge()
-            time.sleep(0.1)  # Reduced delay
-
-            # Step 2: iPhone computes and transmits response
-            print("\n--- Simulating iPhone Response ---")
-            response = self.compute_and_transmit_response(challenge)
-            time.sleep(0.1)  # Reduced delay
-
-            # Step 3: Laptop verifies response directly (simulation)
-            print("\n--- Simulating Laptop Verification ---")
+            self.send_sync()
+            challenge = self.send_challenge()
+            response = self.receive_response()
             success = self.auth_protocol.verify_authentication(response)
-
-            print("\n=== AUTHENTICATION RESULT ===")
-            if success:
-                print("🔓 ACCESS GRANTED - Authentication Successful!")
-            else:
-                print("🔒 ACCESS DENIED - Authentication Failed!")
+            self.send_result(success)
 
             return success
 
         except Exception as e:
-            print(f"Authentication error: {e}")
+            print(f'❌ Authentication error: {e}')
             return False
-    
+
     def cleanup(self):
-        """Clean up resources"""
         self.fsk.cleanup()
         self.tone_utils.cleanup()
 
-def test_acoustic_authentication():
-    """Test the complete acoustic authentication system with handshaking"""
-    
-    # Create authenticator with shared key
-    authenticator = AcousticAuthenticator()
-    
-    try:
-        # Run authentication with handshaking
-        print("\n" + "="*60)
-        print("ACOUSTIC AUTHENTICATION SYSTEM")
-        print("Press 'Authenticate' on iPhone when ready")
-        print("="*60 + "\n")
-        
-        success = authenticator.authenticate_with_handshake()
-        
-        print(f"\n=== TEST SUMMARY ===")
-        print(f"Acoustic Authentication: {'PASSED' if success else 'FAILED'}")
-        
-        if success:
-            print("\n✓ COMPLETE SYSTEM WORKING!")
-            print("- Handshaking protocol ✓")
-            print("- FSK audio transmission ✓")
-            print("- HMAC-SHA256 cryptography ✓") 
-            print("- Challenge-response protocol ✓")
-            print("- Confirmation feedback ✓")
-        
-        return success
-        
-    finally:
-        authenticator.cleanup()
 
-if __name__ == "__main__":
-    test_acoustic_authentication()
+if __name__ == '__main__':
+    auth = AcousticAuthenticator()
+    try:
+        auth.authenticate()
+    finally:
+        auth.cleanup()

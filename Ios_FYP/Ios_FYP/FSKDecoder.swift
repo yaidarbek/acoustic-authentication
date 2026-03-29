@@ -9,11 +9,11 @@ class FSKDecoder {
 
     // MARK: - Configuration (must match laptop Python config)
     let sampleRate: Double = 44100.0
-    let f0: Double = 8000.0    // Binary '0' — 8 kHz
-    let f1: Double = 10000.0   // Binary '1' — 10 kHz
+    let f0: Double = 7000.0    // Binary '0' — 7 kHz
+    let f1: Double = 9000.0    // Binary '1' — 9 kHz
     let symbolDuration: Double = 0.1  // 100 ms per symbol
-    let bandpassLow: Double  = 7000.0
-    let bandpassHigh: Double = 11000.0
+    let bandpassLow: Double  = 6000.0
+    let bandpassHigh: Double = 10000.0
 
     // Barker-7 sequence for synchronization
     private let barker: [Double] = [1, 1, 1, -1, -1, 1, -1]

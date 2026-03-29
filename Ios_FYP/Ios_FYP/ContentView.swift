@@ -168,42 +168,40 @@ struct ContentView: View {
 
     private var statusText: String {
         switch authenticator.state {
-        case .idle:                  return "Idle — ready to authenticate"
-        case .listeningReady:        return "Listening for READY tone..."
-        case .sendingAck:            return "Sending ACK — connecting..."
-        case .listeningAckAck:       return "Waiting for ACK-ACK..."
-        case .sendingRTS:            return "Sending RTS — preparing to receive..."
-        case .listening:             return "Listening for challenge..."
-        case .decoding:              return "Decoding FSK signal..."
-        case .computing:             return "Computing HMAC response..."
-        case .transmitting:          return "Transmitting response..."
-        case .listeningConfirmation: return "Waiting for confirmation..."
-        case .authenticated:         return "Authenticated"
-        case .failed(let msg):       return "Failed: \(msg)"
+        case .idle:             return "Idle — ready to authenticate"
+        case .listeningBeacon:  return "Listening for READY beacon..."
+        case .sendingAck:       return "Sending ACK..."
+        case .listeningSync:    return "Waiting for sync packet..."
+        case .listening:        return "Recording challenge..."
+        case .decoding:         return "Decoding FSK signal..."
+        case .computing:        return "Computing HMAC response..."
+        case .transmitting:     return "Transmitting response..."
+        case .listeningResult:  return "Waiting for result..."
+        case .authenticated:    return "Authenticated"
+        case .failed(let msg):  return "Failed: \(msg)"
         }
     }
 
     private var statusColour: Color {
         switch authenticator.state {
-        case .idle:                  return Color(hex: "#6c7086")
-        case .listeningReady,
+        case .idle:            return Color(hex: "#6c7086")
+        case .listeningBeacon,
              .sendingAck,
-             .listeningAckAck,
-             .sendingRTS,
+             .listeningSync,
              .listening,
              .decoding,
              .computing,
              .transmitting,
-             .listeningConfirmation: return Color(hex: "#f9e2af")
-        case .authenticated:         return Color(hex: "#a6e3a1")
-        case .failed:                return Color(hex: "#f38ba8")
+             .listeningResult:  return Color(hex: "#f9e2af")
+        case .authenticated:   return Color(hex: "#a6e3a1")
+        case .failed:          return Color(hex: "#f38ba8")
         }
     }
 
     private var isActive: Bool {
         switch authenticator.state {
-        case .listeningReady, .sendingAck, .listeningAckAck, .sendingRTS,
-             .listening, .decoding, .computing, .transmitting, .listeningConfirmation:
+        case .listeningBeacon, .sendingAck, .listeningSync,
+             .listening, .decoding, .computing, .transmitting, .listeningResult:
             return true
         default:
             return false

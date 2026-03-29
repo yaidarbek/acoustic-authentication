@@ -2,84 +2,52 @@ import Foundation
 import AVFoundation
 import Combine
 
-/// Authentication state machine
 enum AuthState {
     case idle
-    case listeningReady      // Listening for READY tone from laptop
+    case listeningBeacon     // Listening for READY beacon in real-time chunks
     case sendingAck          // Sending ACK tone to laptop
-    case listeningAckAck     // Waiting for ACK-ACK from laptop
-    case sendingRTS          // Sending Ready-To-Receive tone to laptop
-    case listening           // Listening for challenge
+    case listeningSync       // Listening for FSK sync packet
+    case listening           // Listening for FSK challenge (slot 1)
     case decoding
     case computing
-    case transmitting
-    case listeningConfirmation  // Listening for ACK/NACK from laptop
+    case transmitting        // Sending FSK response (slot 2)
+    case listeningResult     // Listening for result tone (slot 3)
     case authenticated
     case failed(String)
 }
 
-/// Orchestrates the full challenge-response protocol on the iPhone (prover) side
-/// Mirrors: acoustic_auth.py AcousticAuthenticator (prover role only)
-///
-/// Flow:
-///   1. Listen for FSK-encoded challenge from laptop
-///   2. Decode challenge using Goertzel algorithm
-///   3. Compute HMAC-SHA256 response using shared secret
-///   4. Transmit response back to laptop via FSK audio
 class AcousticAuthenticator: ObservableObject {
 
-    // MARK: - Published State (drives SwiftUI)
     @Published var state: AuthState = .idle
     @Published var logMessages: [String] = []
 
-    // MARK: - Components
-    private let fskDecoder: FSKDecoder
-    private let cryptoEngine: CryptoEngine
+    private let fskDecoder   = FSKDecoder()
+    private let cryptoEngine = CryptoEngine(hexKey: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0")
     private let recordingEngine = AVAudioEngine()
-    private let playbackEngine = AVAudioEngine()
-    private var recordedSamples: [Float] = []
+    private let playbackEngine  = AVAudioEngine()
 
-    // MARK: - Config
-    private let challengeSizeBytes = 16   // 128-bit challenge
-    private let responseSizeBytes  = 32   // 256-bit HMAC-SHA256 response
-    
-    // Handshaking tones
-    private let readyToneFreq: Double = 12000.0   // 12 kHz - READY from laptop
-    private let ackToneFreq: Double = 14000.0     // 14 kHz - ACK to laptop
-    private let ackAckToneFreq: Double = 16000.0  // 16 kHz - ACK-ACK from laptop
-    private let rtsToneFreq: Double = 3000.0      // 3 kHz - Ready-To-Receive to laptop
-    private let nackToneFreq: Double = 6000.0     // 6 kHz - NACK from laptop
-    private let toneDuration: Double = 0.5        // 0.5 seconds
-    private let ackToneDuration: Double = 2.0     // 2 seconds - long for reliable detection
-    private let rtsToneDuration: Double = 2.0     // 2 seconds - long for reliable detection
-    private let successToneDuration: Double = 1.0 // 1 second for final ACK/NACK
+    // Sizes
+    private let challengeBits = 32
+    private let responseBits  = 64
+    private let syncBits      = 16
+    private let syncPattern   = "1010101010101010"
 
-    // MARK: - Init
-
-    /// Initialise with shared secret key
-    /// In production: load from iOS Keychain using SecItemCopyMatching
-    init(sharedKeyHex: String) {
-        self.fskDecoder  = FSKDecoder()
-        self.cryptoEngine = CryptoEngine(hexKey: sharedKeyHex)
-    }
+    // Frequencies
+    private let readyFreq: Double = 11000.0  // 11 kHz - READY beacon from laptop
+    private let ackFreq:   Double = 13000.0  // 13 kHz - ACK to laptop
 
     // MARK: - Public API
 
-    /// Start the full authentication cycle
-    /// Called when user taps "Authenticate" in ContentView
     func startAuthentication() {
         logMessages.removeAll()
-        log("🚀 Button tapped - starting...")
-        Task {
-            await runAuthenticationCycle()
-        }
+        log("🚀 Starting authentication...")
+        Task { await runAuthenticationCycle() }
     }
 
     func reset() {
         state = .idle
         logMessages.removeAll()
-        recordedSamples.removeAll()
-        stopAudioEngine()
+        stopEngines()
     }
 
     // MARK: - Authentication Cycle
@@ -87,72 +55,64 @@ class AcousticAuthenticator: ObservableObject {
     @MainActor
     private func runAuthenticationCycle() async {
         do {
-            // Step 1: Listen for READY tone from laptop
-            updateState(.listeningReady)
-            log("🚀 Starting authentication cycle...")
-            log("👂 Listening for READY tone from laptop...")
-            try await listenForReadyTone()
-            log("✅ READY tone detected")
-            
-            // Step 2: Send ACK tone to laptop
+            // Phase 1: Listen for READY beacon in real-time chunks
+            updateState(.listeningBeacon)
+            log("👂 Listening for READY beacon (11kHz)...")
+            try await listenForBeacon()
+            log("✅ Beacon detected")
+
+            // Send ACK
             updateState(.sendingAck)
-            log("📡 Sending ACK tone to laptop...")
-            try await sendAckTone()
-            log("✅ ACK sent, connection established")
-            
-            // Step 3: Wait for ACK-ACK from laptop (confirms it heard our ACK and is starting challenge)
-            log("👂 Waiting for ACK-ACK from laptop (16 kHz)...")
-            try await listenForAckAck()
-            log("✅ ACK-ACK received - laptop is sending challenge now")
-            
-            // Step 4: Send RTS tone - signals laptop we are ready to receive FSK challenge
-            updateState(.sendingRTS)
-            log("📡 Sending RTS tone (3 kHz, 2s) - setting up recording session...")
-            try await sendRTSTone()
-            log("✅ RTS sent - laptop will start FSK challenge in ~0.5s")
-            
-            // Step 5: Listen for challenge
+            log("📡 Sending ACK (13kHz)...")
+            try await playTone(frequency: ackFreq, duration: 1.0)
+            log("✅ ACK sent")
+
+            // Phase 2: Listen for sync packet
+            updateState(.listeningSync)
+            log("👂 Listening for sync packet...")
+            try await listenForSync()
+            log("✅ Sync received - challenge coming immediately")
+
+            // Phase 3 Slot 1: Record challenge
             updateState(.listening)
-            log("🎧 Listening for acoustic challenge...")
-            let audioData = try await recordAudio()
-            log("✅ Recorded \(audioData.count) audio samples")
+            log("🎧 Recording FSK challenge (32 bits)...")
+            let challengeAudio = try await recordSlot(bits: challengeBits)
+            log("✅ Recorded \(challengeAudio.count) samples")
 
-            // Step 4: Decode FSK signal
+            // Decode challenge
             updateState(.decoding)
-            log("🔍 Decoding FSK signal...")
-            let expectedBits = challengeSizeBytes * 8
-            let bits = fskDecoder.decodeSignal(signal: audioData, expectedBits: expectedBits)
-            log("📊 Decoded \(bits.count) bits")
-            let challenge = fskDecoder.bitsToData(bits)
-
-            guard challenge.count == challengeSizeBytes else {
-                throw AuthError.decodingFailed("Expected \(challengeSizeBytes) bytes, got \(challenge.count)")
+            log("🔍 Decoding challenge...")
+            let challengeBitsStr = fskDecoder.decodeSignal(signal: challengeAudio, expectedBits: challengeBits)
+            let challenge = fskDecoder.bitsToData(challengeBitsStr)
+            guard challenge.count == challengeBits / 8 else {
+                throw AuthError.decodingFailed("Expected \(challengeBits/8) bytes, got \(challenge.count)")
             }
-            log("✅ Challenge decoded: \(challenge.hex.prefix(16))...")
+            log("✅ Challenge: \(challenge.hex.prefix(8))...")
 
-            // Step 5: Compute HMAC response
+            // Compute response
             updateState(.computing)
-            log("🔐 Computing HMAC-SHA256 response...")
-            let response = cryptoEngine.computeResponse(challenge: challenge)
-            log("✅ Response computed: \(response.hex.prefix(16))...")
+            log("🔐 Computing truncated HMAC-SHA256...")
+            let fullResponse = cryptoEngine.computeResponse(challenge: challenge)
+            let response = fullResponse.prefix(8)  // truncate to 64 bits
+            log("✅ Response: \(response.hex.prefix(8))...")
 
-            // Step 6: Transmit response
+            // Phase 3 Slot 2: Transmit response
             updateState(.transmitting)
-            log("📡 Transmitting response acoustically...")
-            try await transmitResponse(response)
-            log("✅ Transmission complete")
-            
-            // Step 7: Listen for ACK/NACK confirmation
-            updateState(.listeningConfirmation)
-            log("👂 Waiting for laptop confirmation...")
-            let success = try await listenForConfirmation()
-            
+            log("📡 Transmitting FSK response (64 bits)...")
+            try await transmitBits(data: Data(response))
+            log("✅ Response transmitted")
+
+            // Phase 3 Slot 3: Listen for result
+            updateState(.listeningResult)
+            log("👂 Listening for result tone...")
+            let success = try await listenForResult()
+
             if success {
                 updateState(.authenticated)
-                log("🎉 Authentication successful - laptop accepted response")
+                log("🎉 ACCESS GRANTED")
             } else {
-                updateState(.failed("Authentication rejected by laptop"))
-                log("❌ Authentication failed - laptop rejected response")
+                updateState(.failed("Authentication rejected"))
+                log("❌ ACCESS DENIED")
             }
 
         } catch {
@@ -161,88 +121,92 @@ class AcousticAuthenticator: ObservableObject {
         }
     }
 
-    // MARK: - Handshaking Functions
-    
-    /// Listen for READY tone from laptop (12 kHz)
-    private func listenForReadyTone() async throws {
-        let duration = 10.0
-        let samples = try await recordTone(duration: duration)
-        let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
-        let detected = fskDecoder.detectTone(frequency: readyToneFreq, in: samples, threshold: 3.0, actualSampleRate: actualRate)
-        if !detected {
-            throw AuthError.decodingFailed("READY tone not detected - ensure laptop is transmitting")
+    // MARK: - Phase 1: Beacon detection (real-time chunks)
+
+    private func listenForBeacon() async throws {
+        let chunkDuration = 2.0   // check every 2s chunk
+        let maxChunks     = 30    // up to 60 seconds total
+
+        for _ in 0..<maxChunks {
+            let samples    = try await recordRaw(duration: chunkDuration)
+            let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
+            if fskDecoder.detectTone(frequency: readyFreq, in: samples, threshold: 3.0, actualSampleRate: actualRate) {
+                return
+            }
         }
-    }
-    
-    /// Send ACK tone to laptop (14 kHz, 2s)
-    private func sendAckTone() async throws {
-        let tone = fskDecoder.generateTone(frequency: ackToneFreq, duration: ackToneDuration)
-        try await playSignal(tone)
-    }
-    
-    /// Listen for ACK-ACK tone from laptop (16 kHz)
-    /// This confirms laptop heard our ACK and is about to send the FSK challenge
-    private func listenForAckAck() async throws {
-        updateState(.listeningAckAck)
-        let samples = try await recordTone(duration: 15.0)
-        let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
-        let detected = fskDecoder.detectTone(frequency: ackAckToneFreq, in: samples, threshold: 3.0, actualSampleRate: actualRate)
-        if !detected {
-            throw AuthError.decodingFailed("ACK-ACK tone not detected - laptop did not confirm")
-        }
-    }
-    
-    /// Send Ready-To-Receive tone to laptop (3 kHz, 2s)
-    /// Played after recording session is fully set up
-    /// Laptop waits 2.5s after detecting this before sending FSK challenge
-    private func sendRTSTone() async throws {
-        let tone = fskDecoder.generateTone(frequency: rtsToneFreq, duration: rtsToneDuration)
-        try await playSignal(tone)
+        throw AuthError.decodingFailed("READY beacon not detected")
     }
 
-    /// Listen for ACK (12 kHz) or NACK (6 kHz) from laptop
-    /// Returns true if ACK, false if NACK
-    private func listenForConfirmation() async throws -> Bool {
-        let duration = 10.0  // Listen for up to 10 seconds
-        let samples = try await recordTone(duration: duration)
-        
-        let ackDetected = fskDecoder.detectTone(frequency: readyToneFreq, in: samples, threshold: 50.0)
-        let nackDetected = fskDecoder.detectTone(frequency: nackToneFreq, in: samples, threshold: 50.0)
-        
-        if ackDetected {
-            return true
-        } else if nackDetected {
-            return false
-        } else {
-            throw AuthError.decodingFailed("No confirmation tone received from laptop")
+    // MARK: - Phase 2: Sync packet
+
+    private func listenForSync() async throws {
+        // Record enough for sync packet: (7 + 16) symbols * 100ms + 2s buffer
+        let duration = Double(7 + syncBits) * fskDecoder.symbolDuration + 2.0
+        let samples  = try await recordResampled(duration: duration)
+        let bits     = fskDecoder.decodeSignal(signal: samples, expectedBits: syncBits)
+
+        // Verify sync pattern
+        guard bits.prefix(syncBits) == syncPattern.prefix(syncBits) else {
+            throw AuthError.decodingFailed("Sync pattern mismatch: got \(bits.prefix(16))")
         }
     }
-    
-    /// Record audio for tone detection (shorter duration than full FSK recording)
-    private func recordTone(duration: Double) async throws -> [Float] {
+
+    // MARK: - Phase 3: Record a data slot
+
+    private func recordSlot(bits: Int) async throws -> [Float] {
+        // Exact slot duration: (7 barker + data bits) * 100ms + 2s buffer
+        let duration = Double(7 + bits) * fskDecoder.symbolDuration + 2.0
+        return try await recordResampled(duration: duration)
+    }
+
+    // MARK: - Phase 3: Transmit response bits
+
+    private func transmitBits(data: Data) async throws {
+        let bits   = fskDecoder.dataToBits(data)
+        let barker: [Double] = [1, 1, 1, -1, -1, 1, -1]
+        var signal: [Float]  = []
+
+        for chip in barker {
+            let freq = chip > 0 ? fskDecoder.f1 : fskDecoder.f0
+            signal.append(contentsOf: generateTone(frequency: freq, duration: fskDecoder.symbolDuration))
+        }
+        for bit in bits {
+            let freq = bit == "1" ? fskDecoder.f1 : fskDecoder.f0
+            signal.append(contentsOf: generateTone(frequency: freq, duration: fskDecoder.symbolDuration))
+        }
+
+        try await playSignal(signal)
+    }
+
+    // MARK: - Phase 3: Result tone
+
+    private func listenForResult() async throws -> Bool {
+        let samples    = try await recordRaw(duration: 3.0)
+        let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
+        return fskDecoder.detectTone(frequency: readyFreq, in: samples, threshold: 3.0, actualSampleRate: actualRate)
+    }
+
+    // MARK: - Audio Helpers
+
+    /// Record raw samples at hardware rate (no resampling) — for tone detection
+    private func recordRaw(duration: Double) async throws -> [Float] {
         return try await withCheckedThrowingContinuation { continuation in
             Task { @MainActor in
                 do {
                     let session = AVAudioSession.sharedInstance()
                     try session.setCategory(.record, mode: .default, options: [])
                     try session.setActive(true)
-                    
-                    let inputNode = self.recordingEngine.inputNode
+
+                    let inputNode   = self.recordingEngine.inputNode
                     let inputFormat = inputNode.outputFormat(forBus: 0)
-                    print("[AcousticAuth] recordTone input format: \(inputFormat.sampleRate) Hz")
                     let totalSamples = Int(inputFormat.sampleRate * duration)
-                    
                     var samples: [Float] = []
                     var resumed = false
-                    
+
                     inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
-                        guard !resumed else { return }
-                        
-                        guard let channelData = buffer.floatChannelData?[0] else { return }
-                        let frameCount = Int(buffer.frameLength)
-                        samples.append(contentsOf: UnsafeBufferPointer(start: channelData, count: frameCount))
-                        
-                        if samples.count >= totalSamples && !resumed {
+                        guard !resumed, let ch = buffer.floatChannelData?[0] else { return }
+                        samples.append(contentsOf: UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength)))
+                        if samples.count >= totalSamples {
                             resumed = true
                             self.recordingEngine.inputNode.removeTap(onBus: 0)
                             self.recordingEngine.stop()
@@ -250,10 +214,9 @@ class AcousticAuthenticator: ObservableObject {
                             continuation.resume(returning: Array(samples.prefix(totalSamples)))
                         }
                     }
-                    
+
                     try self.recordingEngine.start()
-                    
-                    // Timeout
+
                     DispatchQueue.main.asyncAfter(deadline: .now() + duration + 1.0) {
                         if !resumed {
                             resumed = true
@@ -272,220 +235,78 @@ class AcousticAuthenticator: ObservableObject {
         }
     }
 
-    // MARK: - Audio Recording
-
-    private func recordAudio() async throws -> [Float] {
-        return try await withCheckedThrowingContinuation { continuation in
-            Task { @MainActor in
-                do {
-                    // Request microphone permission first
-                    let session = AVAudioSession.sharedInstance()
-                    
-                    // Check if we have permission
-                    switch session.recordPermission {
-                    case .denied:
-                        self.log("❌ Microphone permission denied")
-                        continuation.resume(throwing: AuthError.decodingFailed("Microphone permission denied. Enable in Settings."))
-                        return
-                    case .undetermined:
-                        self.log("❓ Requesting microphone permission...")
-                        // Request permission
-                        let granted = await withCheckedContinuation { permContinuation in
-                            session.requestRecordPermission { granted in
-                                permContinuation.resume(returning: granted)
-                            }
-                        }
-                        if !granted {
-                            self.log("❌ Permission denied by user")
-                            continuation.resume(throwing: AuthError.decodingFailed("Microphone permission denied"))
-                            return
-                        }
-                        self.log("✅ Permission granted")
-                    case .granted:
-                        self.log("✅ Microphone permission already granted")
-                        break
-                    @unknown default:
-                        break
-                    }
-                    
-                    self.log("🎵 Setting up audio session...")
-                    try session.setCategory(.record, mode: .measurement, options: [])
-                    try session.setActive(true, options: [])
-
-                    let inputNode = self.recordingEngine.inputNode
-                    // Use the microphone's native format
-                    let inputFormat = inputNode.outputFormat(forBus: 0)
-                    self.log("🎶 Input format: \(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch")
-
-                    // Calculate recording duration using ACTUAL hardware sample rate
-                    let protocolOverhead = 5
-                    let totalBytes = self.challengeSizeBytes + protocolOverhead
-                    let totalSymbols = totalBytes * 8 + 7
-                    let dataDuration = Double(totalSymbols) * self.fskDecoder.symbolDuration
-                    let duration = dataDuration + 3.0
-                    let totalSamples = Int(inputFormat.sampleRate * duration)  // at hardware rate
-                    
-                    self.log("⏱️ Recording duration: \(String(format: "%.1f", duration))s (\(totalSamples) samples at \(inputFormat.sampleRate)Hz)")
-                    self.log("📊 Expecting \(totalSymbols) symbols (\(totalBytes) bytes with protocol overhead)")
-
-                    var samples: [Float] = []
-                    var resumed = false
-                    
-                    self.log("🎤 Installing audio tap...")
-                    self.log("📊 Need to record \(totalSamples) samples (\(String(format: "%.1f", duration))s)")
-
-                    inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
-                        guard !resumed else { return }
-                        
-                        // Convert to Float32 samples
-                        guard let channelData = buffer.floatChannelData?[0] else { return }
-                        let frameCount = Int(buffer.frameLength)
-                        
-                        samples.append(contentsOf: UnsafeBufferPointer(start: channelData, count: frameCount))
-                        
-                        // Log progress every 20000 samples
-                        if samples.count % 20000 < frameCount {
-                            DispatchQueue.main.async {
-                                self.log("📊 Recording: \(samples.count)/\(totalSamples) samples")
-                            }
-                        }
-
-                        if samples.count >= totalSamples && !resumed {
-                            resumed = true
-                            DispatchQueue.main.async {
-                                self.log("✅ Recording complete: \(samples.count) samples")
-                                self.log("🛑 Stopping audio engine...")
-                            }
-                            self.recordingEngine.inputNode.removeTap(onBus: 0)
-                            self.recordingEngine.stop()
-                            try? session.setActive(false, options: [])
-                            // Resample from hardware rate to FSKDecoder rate if needed
-                            let collected = Array(samples.prefix(totalSamples))
-                            let resampled = self.resample(collected, fromRate: inputFormat.sampleRate, toRate: self.fskDecoder.sampleRate)
-                            continuation.resume(returning: resampled)
-                        }
-                    }
-                    
-                    self.log("▶️ Starting audio engine...")
-                    try self.recordingEngine.start()
-                    self.log("✅ Audio engine started, recording for \(String(format: "%.1f", duration))s...")
-
-                    // Timeout safety
-                    DispatchQueue.main.asyncAfter(deadline: .now() + duration + 2.0) {
-                        if !resumed {
-                            resumed = true
-                            self.log("⏰ Timeout reached, stopping...")
-                            if self.recordingEngine.isRunning {
-                                self.recordingEngine.inputNode.removeTap(onBus: 0)
-                                self.recordingEngine.stop()
-                                try? session.setActive(false, options: [])
-                            }
-                            self.log("✅ Collected \(samples.count) samples before timeout")
-                            let resampled = self.resample(samples, fromRate: inputFormat.sampleRate, toRate: self.fskDecoder.sampleRate)
-                            continuation.resume(returning: resampled)
-                        }
-                    }
-
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+    /// Record and resample to FSKDecoder rate — for FSK decoding
+    private func recordResampled(duration: Double) async throws -> [Float] {
+        let raw        = try await recordRaw(duration: duration)
+        let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
+        return resample(raw, fromRate: actualRate, toRate: fskDecoder.sampleRate)
     }
 
-    // MARK: - Audio Transmission
-
-    private func transmitResponse(_ response: Data) async throws {
-        let bits = fskDecoder.dataToBits(response)
-        
-        log("🔊 Preparing \(bits.count) bits for transmission...")
-
-        // Build Barker-7 preamble + data signal
-        let barker: [Double] = [1, 1, 1, -1, -1, 1, -1]
-        var signal: [Float] = []
-
-        // Preamble
-        for chip in barker {
-            let freq = chip > 0 ? fskDecoder.f1 : fskDecoder.f0
-            signal.append(contentsOf: generateTone(frequency: freq, duration: fskDecoder.symbolDuration))
-        }
-
-        // Data bits
-        for bit in bits {
-            let freq = bit == "1" ? fskDecoder.f1 : fskDecoder.f0
-            signal.append(contentsOf: generateTone(frequency: freq, duration: fskDecoder.symbolDuration))
-        }
-        
-        log("🎵 Generated \(signal.count) audio samples for playback")
-
-        try await playSignal(signal)
+    private func playTone(frequency: Double, duration: Double) async throws {
+        let tone = fskDecoder.generateTone(frequency: frequency, duration: duration)
+        try await playSignal(tone)
     }
 
     private func generateTone(frequency: Double, duration: Double) -> [Float] {
         let samples = Int(fskDecoder.sampleRate * duration)
         let fadeLen = max(1, Int(Double(samples) * 0.05))
-
         var tone = (0..<samples).map { i in
             Float(0.3 * sin(2.0 * Double.pi * frequency * Double(i) / fskDecoder.sampleRate))
         }
-
-        // Fade in/out to reduce clicks
         for i in 0..<fadeLen {
-            let factor = Float(i) / Float(fadeLen)
-            tone[i] *= factor
-            tone[samples - 1 - i] *= factor
+            let f = Float(i) / Float(fadeLen)
+            tone[i] *= f
+            tone[samples - 1 - i] *= f
         }
-
         return tone
     }
 
     private func playSignal(_ samples: [Float]) async throws {
         return try await withCheckedThrowingContinuation { continuation in
             do {
-                log("🎶 Configuring playback audio session...")
                 let session = AVAudioSession.sharedInstance()
                 try session.setActive(false)
                 try session.setCategory(.playback, mode: .default, options: [])
                 try session.setActive(true)
 
-                let format = AVAudioFormat(
-                    standardFormatWithSampleRate: fskDecoder.sampleRate,
-                    channels: 1
-                )!
-
-                guard let buffer = AVAudioPCMBuffer(pcmFormat: format,
-                                                    frameCapacity: AVAudioFrameCount(samples.count)) else {
+                let format = AVAudioFormat(standardFormatWithSampleRate: fskDecoder.sampleRate, channels: 1)!
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else {
                     throw AuthError.transmissionFailed("Could not create audio buffer")
                 }
-
                 buffer.frameLength = AVAudioFrameCount(samples.count)
-                let channelData = buffer.floatChannelData![0]
-                for (i, sample) in samples.enumerated() {
-                    channelData[i] = sample
-                }
-                
-                log("🔊 Setting up player node...")
+                let ch = buffer.floatChannelData![0]
+                for (i, s) in samples.enumerated() { ch[i] = s }
+
                 let playerNode = AVAudioPlayerNode()
                 playbackEngine.attach(playerNode)
                 playbackEngine.connect(playerNode, to: playbackEngine.mainMixerNode, format: format)
-
-                log("▶️ Starting playback...")
                 try playbackEngine.start()
 
                 playerNode.scheduleBuffer(buffer) {
-                    self.log("✅ Playback complete")
                     self.playbackEngine.stop()
                     try? session.setActive(false)
                     continuation.resume()
                 }
-                
                 playerNode.play()
-
             } catch {
-                log("❌ Playback error: \(error.localizedDescription)")
                 continuation.resume(throwing: error)
             }
         }
+    }
+
+    private func resample(_ samples: [Float], fromRate: Double, toRate: Double) -> [Float] {
+        guard abs(fromRate - toRate) > 1.0 else { return samples }
+        let ratio       = toRate / fromRate
+        let outputCount = Int(Double(samples.count) * ratio)
+        var output      = [Float](repeating: 0, count: outputCount)
+        for i in 0..<outputCount {
+            let src  = Double(i) / ratio
+            let lo   = Int(src)
+            let hi   = min(lo + 1, samples.count - 1)
+            let frac = Float(src - Double(lo))
+            output[i] = samples[lo] * (1.0 - frac) + samples[hi] * frac
+        }
+        return output
     }
 
     // MARK: - Helpers
@@ -493,65 +314,32 @@ class AcousticAuthenticator: ObservableObject {
     @MainActor
     private func updateState(_ newState: AuthState) {
         state = newState
-        // Log state changes to Xcode console
         switch newState {
-        case .idle:
-            print("[AcousticAuth] STATE: Idle")
-        case .listeningReady:
-            print("[AcousticAuth] STATE: Listening for READY")
-        case .sendingAck:
-            print("[AcousticAuth] STATE: Sending ACK")
-        case .listening:
-            print("[AcousticAuth] STATE: Listening for Challenge")
-        case .decoding:
-            print("[AcousticAuth] STATE: Decoding")
-        case .computing:
-            print("[AcousticAuth] STATE: Computing")
-        case .transmitting:
-            print("[AcousticAuth] STATE: Transmitting")
-        case .sendingRTS:
-            print("[AcousticAuth] STATE: Sending RTS")
-        case .listeningAckAck:
-            print("[AcousticAuth] STATE: Listening for ACK-ACK")
-        case .listeningConfirmation:
-            print("[AcousticAuth] STATE: Listening for Confirmation")
-        case .authenticated:
-            print("[AcousticAuth] STATE: Authenticated ✅")
-        case .failed(let msg):
-            print("[AcousticAuth] STATE: Failed - \(msg) ❌")
+        case .idle:              print("[AcousticAuth] STATE: Idle")
+        case .listeningBeacon:   print("[AcousticAuth] STATE: Listening for Beacon")
+        case .sendingAck:        print("[AcousticAuth] STATE: Sending ACK")
+        case .listeningSync:     print("[AcousticAuth] STATE: Listening for Sync")
+        case .listening:         print("[AcousticAuth] STATE: Listening for Challenge")
+        case .decoding:          print("[AcousticAuth] STATE: Decoding")
+        case .computing:         print("[AcousticAuth] STATE: Computing")
+        case .transmitting:      print("[AcousticAuth] STATE: Transmitting")
+        case .listeningResult:   print("[AcousticAuth] STATE: Listening for Result")
+        case .authenticated:     print("[AcousticAuth] STATE: Authenticated ✅")
+        case .failed(let msg):   print("[AcousticAuth] STATE: Failed - \(msg) ❌")
         }
     }
 
     private func log(_ message: String) {
-        print("[AcousticAuth] \(message)")  // Print to Xcode console
-        DispatchQueue.main.async {
-            self.logMessages.append(message)  // Show in iPhone UI
-        }
+        print("[AcousticAuth] \(message)")
+        DispatchQueue.main.async { self.logMessages.append(message) }
     }
 
-    private func resample(_ samples: [Float], fromRate: Double, toRate: Double) -> [Float] {
-        guard abs(fromRate - toRate) > 1.0 else { return samples }
-        let ratio = toRate / fromRate
-        let outputCount = Int(Double(samples.count) * ratio)
-        var output = [Float](repeating: 0, count: outputCount)
-        for i in 0..<outputCount {
-            let srcIndex = Double(i) / ratio
-            let lo = Int(srcIndex)
-            let hi = min(lo + 1, samples.count - 1)
-            let frac = Float(srcIndex - Double(lo))
-            output[i] = samples[lo] * (1.0 - frac) + samples[hi] * frac
-        }
-        return output
-    }
-
-    private func stopAudioEngine() {
+    private func stopEngines() {
         if recordingEngine.isRunning {
             recordingEngine.inputNode.removeTap(onBus: 0)
             recordingEngine.stop()
         }
-        if playbackEngine.isRunning {
-            playbackEngine.stop()
-        }
+        if playbackEngine.isRunning { playbackEngine.stop() }
         try? AVAudioSession.sharedInstance().setActive(false, options: [])
     }
 }
@@ -564,16 +352,12 @@ enum AuthError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .decodingFailed(let msg):    return "Decoding failed: \(msg)"
+        case .decodingFailed(let msg):     return "Decoding failed: \(msg)"
         case .transmissionFailed(let msg): return "Transmission failed: \(msg)"
         }
     }
 }
 
-// MARK: - Data Extension
-
 extension Data {
-    var hex: String {
-        return map { String(format: "%02x", $0) }.joined()
-    }
+    var hex: String { map { String(format: "%02x", $0) }.joined() }
 }
