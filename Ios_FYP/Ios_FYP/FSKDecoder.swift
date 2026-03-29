@@ -88,21 +88,28 @@ class FSKDecoder {
         var coarsePeak = 0
         for i in 0..<corrLen {
             var sum: Float = 0
-            vDSP_dotpr(sigDs + i, 1, refDs, 1, &sum, vDSP_Length(refDs.count))
+            sigDs.withUnsafeBufferPointer { sigPtr in
+                refDs.withUnsafeBufferPointer { refPtr in
+                    vDSP_dotpr(sigPtr.baseAddress! + i, 1, refPtr.baseAddress!, 1, &sum, vDSP_Length(refDs.count))
+                }
+            }
             let c = abs(sum)
             if c > maxCorr { maxCorr = c; coarsePeak = i }
         }
         coarsePeak *= ds
 
         // Step 2: Fine search every 10 samples within +-100 samples of coarse peak
-        // (coarse already accurate to +-ds=10 samples, so +-100 is generous)
         let fineStart = max(0, coarsePeak - 100)
         let fineEnd   = min(signal.count - reference.count, coarsePeak + 100)
         maxCorr = 0
         var finePeak = coarsePeak
         for i in stride(from: fineStart, to: fineEnd, by: 10) {
             var sum: Float = 0
-            vDSP_dotpr(signal + i, 1, reference, 1, &sum, vDSP_Length(reference.count))
+            signal.withUnsafeBufferPointer { sigPtr in
+                reference.withUnsafeBufferPointer { refPtr in
+                    vDSP_dotpr(sigPtr.baseAddress! + i, 1, refPtr.baseAddress!, 1, &sum, vDSP_Length(reference.count))
+                }
+            }
             let c = abs(sum)
             if c > maxCorr { maxCorr = c; finePeak = i }
         }
@@ -112,7 +119,11 @@ class FSKDecoder {
         let ultraEnd   = min(signal.count - reference.count, finePeak + 10)
         for i in ultraStart..<ultraEnd {
             var sum: Float = 0
-            vDSP_dotpr(signal + i, 1, reference, 1, &sum, vDSP_Length(reference.count))
+            signal.withUnsafeBufferPointer { sigPtr in
+                reference.withUnsafeBufferPointer { refPtr in
+                    vDSP_dotpr(sigPtr.baseAddress! + i, 1, refPtr.baseAddress!, 1, &sum, vDSP_Length(reference.count))
+                }
+            }
             let c = abs(sum)
             if c > maxCorr { maxCorr = c; finePeak = i }
         }
