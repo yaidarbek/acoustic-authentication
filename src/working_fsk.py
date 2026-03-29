@@ -155,12 +155,21 @@ class WorkingFSK:
         corr   = np.correlate(sig_ds, ref_ds, mode='valid')
         coarse_peak = int(np.argmax(np.abs(corr))) * ds
 
-        # Step 2: Fine search every 1 sample within +-1 symbol around coarse peak
+        # Step 2: Fine search every 10 samples within +-1 symbol around coarse peak
         fine_start = max(0, coarse_peak - samples_per_symbol)
         fine_end   = min(len(signal) - len(reference), coarse_peak + samples_per_symbol)
         max_corr   = 0.0
         fine_peak  = coarse_peak
-        for i in range(fine_start, fine_end):
+        for i in range(fine_start, fine_end, 10):
+            s = float(np.abs(np.dot(signal[i:i+len(reference)], reference)))
+            if s > max_corr:
+                max_corr  = s
+                fine_peak = i
+
+        # Step 3: Ultra-fine search every 1 sample within +-10 samples of fine peak
+        ultra_start = max(0, fine_peak - 10)
+        ultra_end   = min(len(signal) - len(reference), fine_peak + 10)
+        for i in range(ultra_start, ultra_end):
             s = float(np.abs(np.dot(signal[i:i+len(reference)], reference)))
             if s > max_corr:
                 max_corr  = s

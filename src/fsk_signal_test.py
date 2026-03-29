@@ -131,12 +131,21 @@ class FSKEngine:
         corr   = np.correlate(sig_ds, ref_ds, mode='valid')
         coarse_peak = int(np.argmax(np.abs(corr))) * ds
 
-        # Step 2: Fine search every 1 sample within +-1 symbol around coarse peak
+        # Step 2: Fine search every 10 samples within +-1 symbol around coarse peak
         fine_start = max(0, coarse_peak - self.samples_per_symbol)
         fine_end   = min(len(signal) - len(reference), coarse_peak + self.samples_per_symbol)
         max_corr   = 0.0
         fine_peak  = coarse_peak
-        for i in range(fine_start, fine_end):
+        for i in range(fine_start, fine_end, 10):
+            s = float(np.abs(np.dot(signal[i:i+len(reference)], reference)))
+            if s > max_corr:
+                max_corr  = s
+                fine_peak = i
+
+        # Step 3: Ultra-fine search every 1 sample within +-10 samples of fine peak
+        ultra_start = max(0, fine_peak - 10)
+        ultra_end   = min(len(signal) - len(reference), fine_peak + 10)
+        for i in range(ultra_start, ultra_end):
             s = float(np.abs(np.dot(signal[i:i+len(reference)], reference)))
             if s > max_corr:
                 max_corr  = s
@@ -275,6 +284,55 @@ def run_test(fsk: FSKEngine, name: str, bits: str, snr_db: float = None) -> bool
         return False
 
 
+def run_test_with_presilence(fsk: FSKEngine, name: str, bits: str, presilence_s: float, snr_db: float = None) -> bool:
+    """Test with N seconds of silence prepended — simulates iPhone recording before signal arrives"""
+    md(f'\n### Test: {name}')
+    md(f'- Input bits: `{bits[:32]}{"..." if len(bits)>32 else ""}`')
+    md(f'- Bit count: {len(bits)}')
+    md(f'- Pre-silence: {presilence_s:.1f}s (simulates recording starting before signal)')
+    md(f'- SNR: {"clean (no noise)" if snr_db is None else f"{snr_db} dB"}')
+
+    # Encode signal
+    signal = fsk.encode(bits)
+
+    # Prepend silence
+    presilence = np.zeros(int(fsk.sample_rate * presilence_s), dtype=np.float32)
+    signal     = np.concatenate([presilence, signal])
+
+    if snr_db is not None:
+        signal = fsk.add_noise(signal, snr_db)
+
+    md(f'- Total signal length: {len(signal)} samples ({len(signal)/fsk.sample_rate:.3f}s)')
+    md(f'- Signal arrives at: {presilence_s:.3f}s into recording')
+    md(f'- Expected frame start: ~{int(fsk.sample_rate * (presilence_s + fsk.guard_duration))} samples ({presilence_s + fsk.guard_duration:.3f}s)')
+
+    t0    = time.time()
+    stats = fsk.decode(signal, len(bits))
+    decode_time = time.time() - t0
+
+    expected_frame = int(fsk.sample_rate * (presilence_s + fsk.guard_duration))
+    md(f'- Frame start found: sample {stats["frame_start"]} ({stats["frame_start"]/fsk.sample_rate:.3f}s)')
+    md(f'- Frame offset from expected: {stats["frame_start"] - expected_frame} samples')
+    md(f'- Decode time: {decode_time*1000:.1f}ms')
+    md(f'- Decoded bits: `{stats["decoded_bits"][:32]}{"..." if len(stats["decoded_bits"])>32 else ""}`')
+
+    if stats['errors']:
+        for e in stats['errors']:
+            md(f'- Error: {e}')
+
+    decoded = stats['decoded_bits']
+    if len(decoded) == len(bits):
+        errors = sum(1 for a, b in zip(bits, decoded) if a != b)
+        ber    = errors / len(bits) * 100
+        match  = errors == 0
+        md(f'- Bit errors: {errors}/{len(bits)} (BER={ber:.1f}%)')
+        md(f'- Result: {"PASS" if match else "FAIL"}')
+        return match
+    else:
+        md(f'- FAIL: decoded {len(decoded)} bits, expected {len(bits)}')
+        return False
+
+
 def run_all_tests():
     md('# FSK Signal Processing Test Report')
     md(f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
@@ -364,6 +422,55 @@ def run_all_tests():
     else:
         md(f'-  Challenge decode failed: got {len(ch_decoded)} bits')
         results['crypto_roundtrip'] = False
+
+    #  Test 5: Real audio simulation (pre-silence)
+    md('\n## 5. Real Audio Simulation Tests')
+    md('Simulates iPhone recording starting before signal arrives.')
+    md('Pre-silence = time between iPhone starting to record and laptop starting to transmit.')
+
+    challenge3      = crypto.generate_challenge()
+    challenge3_bits = ''.join(format(b, '08b') for b in challenge3)
+    response3       = crypto.compute_response(challenge3)
+    response3_bits  = ''.join(format(b, '08b') for b in response3)
+
+    md(f'\nChallenge bytes: `{challenge3.hex()}`')
+    md(f'Response bytes: `{response3.hex()}`')
+
+    # Sync with different pre-silence durations
+    md('\n### 5a. Sync pattern with pre-silence')
+    md('Exact timing: laptop waits TONE_DURATION(1.0s) + 0.3s + sentinel(0.3s) = 1.6s')
+    results['sync_presilence_0.5s'] = run_test_with_presilence(fsk, 'sync_pre_0.5s', SYNC_PATTERN, 0.5)
+    results['sync_presilence_1.0s'] = run_test_with_presilence(fsk, 'sync_pre_1.0s', SYNC_PATTERN, 1.0)
+    results['sync_presilence_1.5s'] = run_test_with_presilence(fsk, 'sync_pre_1.5s', SYNC_PATTERN, 1.5)
+    results['sync_presilence_2.0s'] = run_test_with_presilence(fsk, 'sync_pre_2.0s', SYNC_PATTERN, 2.0)
+    # Exact protocol timing: 1.6s +- 0.3s
+    results['sync_exact_1.3s']      = run_test_with_presilence(fsk, 'sync_exact_1.3s', SYNC_PATTERN, 1.3)
+    results['sync_exact_1.6s']      = run_test_with_presilence(fsk, 'sync_exact_1.6s', SYNC_PATTERN, 1.6)
+    results['sync_exact_1.9s']      = run_test_with_presilence(fsk, 'sync_exact_1.9s', SYNC_PATTERN, 1.9)
+    # With noise
+    results['sync_exact_1.3s_20dB'] = run_test_with_presilence(fsk, 'sync_exact_1.3s_20dB', SYNC_PATTERN, 1.3, snr_db=20)
+    results['sync_exact_1.6s_20dB'] = run_test_with_presilence(fsk, 'sync_exact_1.6s_20dB', SYNC_PATTERN, 1.6, snr_db=20)
+    results['sync_exact_1.9s_20dB'] = run_test_with_presilence(fsk, 'sync_exact_1.9s_20dB', SYNC_PATTERN, 1.9, snr_db=20)
+
+    # Challenge with pre-silence + noise
+    md('\n### 5b. Challenge with pre-silence + noise')
+    md('Exact timing: same as sync = 1.6s +- 0.3s')
+    results['challenge_exact_1.3s']      = run_test_with_presilence(fsk, 'challenge_exact_1.3s',      challenge3_bits, 1.3)
+    results['challenge_exact_1.6s']      = run_test_with_presilence(fsk, 'challenge_exact_1.6s',      challenge3_bits, 1.6)
+    results['challenge_exact_1.9s']      = run_test_with_presilence(fsk, 'challenge_exact_1.9s',      challenge3_bits, 1.9)
+    results['challenge_exact_1.3s_20dB'] = run_test_with_presilence(fsk, 'challenge_exact_1.3s_20dB', challenge3_bits, 1.3, snr_db=20)
+    results['challenge_exact_1.6s_20dB'] = run_test_with_presilence(fsk, 'challenge_exact_1.6s_20dB', challenge3_bits, 1.6, snr_db=20)
+    results['challenge_exact_1.9s_20dB'] = run_test_with_presilence(fsk, 'challenge_exact_1.9s_20dB', challenge3_bits, 1.9, snr_db=20)
+
+    # Response with pre-silence + noise
+    md('\n### 5c. Response with pre-silence + noise')
+    md('Exact timing: laptop records immediately after challenge, response arrives ~0-1s later')
+    results['response_exact_0.0s']      = run_test_with_presilence(fsk, 'response_exact_0.0s',      response3_bits, 0.0)
+    results['response_exact_0.5s']      = run_test_with_presilence(fsk, 'response_exact_0.5s',      response3_bits, 0.5)
+    results['response_exact_1.0s']      = run_test_with_presilence(fsk, 'response_exact_1.0s',      response3_bits, 1.0)
+    results['response_exact_0.0s_20dB'] = run_test_with_presilence(fsk, 'response_exact_0.0s_20dB', response3_bits, 0.0, snr_db=20)
+    results['response_exact_0.5s_20dB'] = run_test_with_presilence(fsk, 'response_exact_0.5s_20dB', response3_bits, 0.5, snr_db=20)
+    results['response_exact_1.0s_20dB'] = run_test_with_presilence(fsk, 'response_exact_1.0s_20dB', response3_bits, 1.0, snr_db=20)
 
     #  Summary 
     md('\n## Summary')

@@ -95,12 +95,22 @@ class FSKDecoder {
         }
         coarsePeak *= ds
 
-        // Step 2: Fine search every 1 sample within +-1 symbol around coarse peak
+        // Step 2: Fine search every 10 samples within +-1 symbol around coarse peak
         let fineStart = max(0, coarsePeak - samplesPerSymbol)
         let fineEnd   = min(signal.count - reference.count, coarsePeak + samplesPerSymbol)
         maxCorr = 0
         var finePeak = coarsePeak
-        for i in fineStart..<fineEnd {
+        for i in stride(from: fineStart, to: fineEnd, by: 10) {
+            var sum: Float = 0
+            for j in 0..<reference.count { sum += signal[i+j] * reference[j] }
+            let c = abs(sum)
+            if c > maxCorr { maxCorr = c; finePeak = i }
+        }
+
+        // Step 3: Ultra-fine search every 1 sample within +-10 samples of fine peak
+        let ultraStart = max(0, finePeak - 10)
+        let ultraEnd   = min(signal.count - reference.count, finePeak + 10)
+        for i in ultraStart..<ultraEnd {
             var sum: Float = 0
             for j in 0..<reference.count { sum += signal[i+j] * reference[j] }
             let c = abs(sum)
