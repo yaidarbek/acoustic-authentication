@@ -128,6 +128,18 @@ class ToneUtils:
         
         return power > threshold
     
+    def detect_tone_chunked(self, frequency, max_duration=5.0, chunk_duration=0.5, threshold=50.0):
+        """
+        Detect tone in real-time chunks, returns as soon as tone is found
+        Much faster than recording full duration then checking
+        """
+        chunks = int(max_duration / chunk_duration)
+        for _ in range(chunks):
+            signal = self.record_audio(chunk_duration)
+            if self.detect_tone(signal, frequency, threshold=threshold):
+                return True
+        return False
+
     def cleanup(self):
         """Clean up PyAudio resources"""
         self.audio.terminate()

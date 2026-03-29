@@ -143,16 +143,10 @@ class AcousticAuthenticator: ObservableObject {
     // MARK: - Phase 1: Beacon detection (real-time chunks)
 
     private func listenForBeacon() async throws {
-        let chunkDuration = 2.0
-        let maxChunks     = 30
-        // Capture rate once before the loop — stable before engine starts
-        let actualRate = recordingEngine.inputNode.outputFormat(forBus: 0).sampleRate
-
+        let maxChunks = 30  // up to 60 seconds total
         for _ in 0..<maxChunks {
-            let samples = try await recordRaw(duration: chunkDuration)
-            if fskDecoder.detectTone(frequency: readyFreq, in: samples, threshold: 3.0, actualSampleRate: actualRate) {
-                return
-            }
+            let detected = try await listenForTone(frequency: readyFreq, maxDuration: 2.0)
+            if detected { return }
         }
         throw AuthError.decodingFailed("READY beacon not detected")
     }

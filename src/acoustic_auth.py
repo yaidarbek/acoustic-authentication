@@ -51,10 +51,8 @@ class AcousticAuthenticator:
             print(f'Attempt {attempt+1}/{max_attempts}: sending READY beacon (11kHz)...')
             self.tone_utils.play_tone(self.READY_FREQ, self.TONE_DURATION)
 
-            # Listen for ACK during 3s window
             print('Listening for ACK (13kHz)...')
-            signal = self.tone_utils.record_audio(3.0)
-            if self.tone_utils.detect_tone(signal, self.ACK_FREQ, threshold=10.0):
+            if self.tone_utils.detect_tone_chunked(self.ACK_FREQ, max_duration=3.0, chunk_duration=0.5, threshold=10.0):
                 print('✅ ACK detected - iPhone connected')
                 return True
 
@@ -71,10 +69,8 @@ class AcousticAuthenticator:
         print(f'Sending sync pattern: {SYNC_PATTERN}')
         self.fsk.transmit_data(SYNC_PATTERN)
         print('✅ Sync sent')
-        # Wait for iPhone ACK before sending challenge
         print('Listening for ACK after sync...')
-        signal = self.tone_utils.record_audio(5.0)
-        if not self.tone_utils.detect_tone(signal, self.ACK_FREQ, threshold=10.0):
+        if not self.tone_utils.detect_tone_chunked(self.ACK_FREQ, max_duration=5.0, chunk_duration=0.5, threshold=10.0):
             raise RuntimeError('No ACK received after sync')
         print('✅ ACK received - iPhone ready for challenge')
 
@@ -86,10 +82,8 @@ class AcousticAuthenticator:
         bits = ''.join(format(b, '08b') for b in challenge)
         self.fsk.transmit_data(bits)
         print('✅ Challenge sent')
-        # Wait for iPhone ACK before recording response
         print('Listening for ACK after challenge...')
-        signal = self.tone_utils.record_audio(5.0)
-        if not self.tone_utils.detect_tone(signal, self.ACK_FREQ, threshold=10.0):
+        if not self.tone_utils.detect_tone_chunked(self.ACK_FREQ, max_duration=5.0, chunk_duration=0.5, threshold=10.0):
             raise RuntimeError('No ACK received after challenge')
         print('✅ ACK received - iPhone ready to respond')
         return challenge
@@ -122,7 +116,6 @@ class AcousticAuthenticator:
         else:
             print('🔒 ACCESS DENIED - sending silence')
             time.sleep(self.SUCCESS_DURATION)
-
     # -- Full authentication flow ---------------------------------------
 
     def authenticate(self):
