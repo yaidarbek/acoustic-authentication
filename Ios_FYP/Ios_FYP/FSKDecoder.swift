@@ -14,6 +14,7 @@ class FSKDecoder {
     let symbolDuration: Double = 0.15  // 150ms — matches Python working_fsk.py
     let bandpassLow: Double  = 6000.0
     let bandpassHigh: Double = 10000.0
+    let amplitude: Float = 0.3  // Single amplitude used everywhere
 
     // Barker-7 sequence for synchronization
     private let barker: [Double] = [1, 1, 1, -1, -1, 1, -1]
@@ -256,26 +257,20 @@ class FSKDecoder {
     
     /// Generate a pure tone at specified frequency
     /// Used for ACK tone transmission
-    func generateTone(frequency: Double, duration: Double, amplitude: Float = 0.3) -> [Float] {
+    func generateTone(frequency: Double, duration: Double, amplitude: Float? = nil) -> [Float] {
+        let amp = amplitude ?? self.amplitude
         let samples = Int(sampleRate * duration)
         let fadeLen = max(1, Int(Double(samples) * 0.05))
-        
-        // Generate base tone
         var tone: [Float] = []
         for i in 0..<samples {
             let phase = 2.0 * Double.pi * frequency * Double(i) / sampleRate
-            let sinValue = sin(phase)
-            let sample = Float(amplitude) * Float(sinValue)
-            tone.append(sample)
+            tone.append(amp * Float(sin(phase)))
         }
-        
-        // Fade in/out to reduce clicks
         for i in 0..<fadeLen {
             let factor = Float(i) / Float(fadeLen)
             tone[i] *= factor
             tone[samples - 1 - i] *= factor
         }
-        
         return tone
     }
 }

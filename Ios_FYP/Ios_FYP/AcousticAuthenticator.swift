@@ -267,17 +267,7 @@ class AcousticAuthenticator: ObservableObject {
     }
 
     private func generateTone(frequency: Double, duration: Double) -> [Float] {
-        let samples = Int(fskDecoder.sampleRate * duration)
-        let fadeLen = max(1, Int(Double(samples) * 0.05))
-        var tone = (0..<samples).map { i in
-            Float(0.3 * sin(2.0 * Double.pi * frequency * Double(i) / fskDecoder.sampleRate))
-        }
-        for i in 0..<fadeLen {
-            let f = Float(i) / Float(fadeLen)
-            tone[i] *= f
-            tone[samples - 1 - i] *= f
-        }
-        return tone
+        return fskDecoder.generateTone(frequency: frequency, duration: duration)
     }
 
     private func playSignal(_ samples: [Float]) async throws {

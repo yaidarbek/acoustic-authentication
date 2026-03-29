@@ -9,7 +9,7 @@ class WorkingFSK:
         self.f0 = 7000   # Binary '0' - 7 kHz
         self.f1 = 9000   # Binary '1' - 9 kHz
         self.symbol_duration = 0.15  # 150ms - matches Swift FSKDecoder
-        self.amplitude = 0.1
+        self.amplitude = 0.3  # Single amplitude used everywhere
         
         self.audio = pyaudio.PyAudio()
         
