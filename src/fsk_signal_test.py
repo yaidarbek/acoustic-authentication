@@ -333,6 +333,55 @@ def run_test_with_presilence(fsk: FSKEngine, name: str, bits: str, presilence_s:
         return False
 
 
+def run_test_timing(fsk: FSKEngine, name: str, bits: str, presilence_s: float, snr_db: float = None) -> bool:
+    """Test decode time specifically — simulates iPhone hardware performance"""
+    md(f'\n### Timing Test: {name}')
+    md(f'- Bit count: {len(bits)}, Pre-silence: {presilence_s:.1f}s, SNR: {"clean" if snr_db is None else f"{snr_db}dB"}')
+
+    signal = fsk.encode(bits)
+    presilence = np.zeros(int(fsk.sample_rate * presilence_s), dtype=np.float32)
+    signal = np.concatenate([presilence, signal])
+    if snr_db is not None:
+        signal = fsk.add_noise(signal, snr_db)
+
+    # Time each stage separately
+    t0 = time.time()
+    filtered = fsk.bandpass_filter(signal)
+    t_filter = time.time() - t0
+
+    t0 = time.time()
+    frame_start = fsk.barker_sync(filtered)
+    t_sync = time.time() - t0
+
+    t0 = time.time()
+    window, window_start = fsk.apply_agc_windowed(filtered, frame_start, len(bits))
+    windowed_data_start = frame_start + 7 * fsk.samples_per_symbol - window_start
+    decoded_bits = ''
+    for i in range(len(bits)):
+        sym_start = windowed_data_start + i * fsk.samples_per_symbol
+        sym_end   = sym_start + fsk.samples_per_symbol
+        if sym_end > len(window): break
+        sym_data = window[sym_start:sym_end]
+        p0 = fsk.goertzel(sym_data, fsk.f0)
+        p1 = fsk.goertzel(sym_data, fsk.f1)
+        decoded_bits += '1' if p1 > p0 else '0'
+    t_demod = time.time() - t0
+
+    total = t_filter + t_sync + t_demod
+    errors = sum(1 for a, b in zip(bits, decoded_bits) if a != b) if len(decoded_bits) == len(bits) else -1
+
+    md(f'| Stage | Time |')
+    md(f'|-------|------|')
+    md(f'| Bandpass filter | {t_filter*1000:.1f}ms |')
+    md(f'| Barker sync | {t_sync*1000:.1f}ms |')
+    md(f'| Goertzel demod | {t_demod*1000:.1f}ms |')
+    md(f'| **Total** | **{total*1000:.1f}ms** |')
+    md(f'- Frame start: sample {frame_start} ({frame_start/fsk.sample_rate:.3f}s)')
+    md(f'- Bit errors: {errors}/{len(bits)}')
+    md(f'- Result: {"PASS" if errors == 0 else "FAIL"}')
+    return errors == 0
+
+
 def run_all_tests():
     md('# FSK Signal Processing Test Report')
     md(f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
@@ -471,6 +520,18 @@ def run_all_tests():
     results['response_exact_0.0s_20dB'] = run_test_with_presilence(fsk, 'response_exact_0.0s_20dB', response3_bits, 0.0, snr_db=20)
     results['response_exact_0.5s_20dB'] = run_test_with_presilence(fsk, 'response_exact_0.5s_20dB', response3_bits, 0.5, snr_db=20)
     results['response_exact_1.0s_20dB'] = run_test_with_presilence(fsk, 'response_exact_1.0s_20dB', response3_bits, 1.0, snr_db=20)
+
+    #  Test 6: Decode timing breakdown
+    md('\n## 6. Decode Timing Breakdown')
+    md('Measures time for each decode stage to identify bottleneck.')
+    md('iPhone ACK timeout is 5s — total decode must be under that.')
+
+    results['timing_sync_1.6s']          = run_test_timing(fsk, 'sync_1.6s_presilence',      SYNC_PATTERN,    1.6)
+    results['timing_challenge_1.6s']     = run_test_timing(fsk, 'challenge_1.6s_presilence',  challenge3_bits, 1.6)
+    results['timing_response_0.5s']      = run_test_timing(fsk, 'response_0.5s_presilence',   response3_bits,  0.5)
+    results['timing_sync_1.6s_20dB']     = run_test_timing(fsk, 'sync_1.6s_20dB',             SYNC_PATTERN,    1.6, snr_db=20)
+    results['timing_challenge_1.6s_20dB']= run_test_timing(fsk, 'challenge_1.6s_20dB',        challenge3_bits, 1.6, snr_db=20)
+    results['timing_response_0.5s_20dB'] = run_test_timing(fsk, 'response_0.5s_20dB',         response3_bits,  0.5, snr_db=20)
 
     #  Summary 
     md('\n## Summary')
