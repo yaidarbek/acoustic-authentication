@@ -73,14 +73,17 @@ class SecureStorage:
         """Decrypt and retrieve a file"""
         try:
             if file_id not in self.files:
+                print(f"[SecureStorage] file_id not found: {file_id}")
                 return None
             
             encrypted_path = self.files[file_id]['encrypted_path']
+            print(f"[SecureStorage] decrypting: {encrypted_path}")
             with open(encrypted_path, 'rb') as f:
                 encrypted = f.read()
             
             return self.cipher.decrypt(encrypted)
-        except Exception:
+        except Exception as e:
+            print(f"[SecureStorage] decryption failed: {e}")
             return None
     
     def list_files(self) -> list:
