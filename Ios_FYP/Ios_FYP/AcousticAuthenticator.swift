@@ -96,16 +96,25 @@ class AcousticAuthenticator: ObservableObject {
             }
             log("✅ Challenge: \(challenge.hex.prefix(8))...")
 
-            // Send ACK - tells laptop we decoded challenge and are ready to respond
+            // Send ACK - tells laptop we decoded challenge
             log("📡 Sending ACK after challenge...")
             try await playTone(frequency: ackFreq, duration: 1.0)
-            log("✅ ACK sent - computing response")
+            log("✅ ACK sent - waiting for GO tone")
 
-            // Compute response
+            // Compute response while waiting (HMAC is fast, <1ms)
             updateState(.computing)
             log("🔐 Computing truncated HMAC-SHA256...")
             let response = cryptoEngine.computeResponse(challenge: challenge)
-            log("✅ Response: \(response.hex.prefix(8))...")
+            log("✅ Response ready: \(response.hex.prefix(8))...")
+
+            // Wait for GO tone from laptop (11kHz) — laptop sends this only after
+            // its recording stream is open, so we transmit exactly when it is listening
+            log("👂 Waiting for GO tone (11kHz) from laptop...")
+            let goDetected = try await listenForTone(frequency: readyFreq, maxDuration: 10.0)
+            guard goDetected else {
+                throw AuthError.decodingFailed("GO tone not received from laptop")
+            }
+            log("✅ GO tone detected - transmitting response")
 
             // Phase 3 Slot 2: Transmit response
             updateState(.transmitting)
@@ -202,7 +211,7 @@ class AcousticAuthenticator: ObservableObject {
         return try await listenForTone(frequency: readyFreq, maxDuration: laptopAckWindow + 2.0)
     }
 
-    // MARK: - Audio Helpers
+    private var currentSessionCategory: AVAudioSession.Category = .ambient
 
     /// Record raw samples at hardware rate (no resampling) — for tone detection
     private func recordRaw(duration: Double) async throws -> [Float] {
@@ -275,9 +284,14 @@ class AcousticAuthenticator: ObservableObject {
             Task { @MainActor in
                 do {
                     let session = AVAudioSession.sharedInstance()
-                    try session.setActive(false)
+                    // Only deactivate if switching FROM record — required by iOS
+                    // Playback → playback needs no deactivation (preserves user volume)
+                    if self.currentSessionCategory == .record {
+                        try session.setActive(false)
+                    }
                     try session.setCategory(.playback, mode: .default, options: [])
                     try session.setActive(true)
+                    self.currentSessionCategory = .playback
 
                     if self.playbackEngine.isRunning { self.playbackEngine.stop() }
                     self.playbackEngine.reset()

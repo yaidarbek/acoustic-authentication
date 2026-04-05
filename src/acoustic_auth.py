@@ -121,10 +121,27 @@ class AcousticAuthenticator:
     def receive_response(self):
         """Receive 64-bit FSK response from iPhone"""
         print('=== SLOT 2: RECEIVING RESPONSE ===')
-        # Add extra buffer before response arrives (iPhone needs time after ACK)
-        duration = self.RESPONSE_DURATION + self.TONE_DURATION + 0.5 + 2.0
+        # Open recording FIRST, then send GO tone so iPhone transmits only when we are listening
+        duration = self.RESPONSE_DURATION + 2.0  # FSK duration + small buffer
         print(f'Recording for {duration:.1f}s...')
-        signal = self.fsk.record_data(duration)
+
+        import threading
+        signal_container = [None]
+        def _record():
+            signal_container[0] = self.fsk.record_data(duration)
+        record_thread = threading.Thread(target=_record, daemon=True)
+        record_thread.start()
+
+        # Small pause to let the recording stream open before sending GO
+        import time as _time
+        _time.sleep(0.3)
+
+        # Send GO tone — iPhone is waiting for this before transmitting
+        print('📡 Sending GO tone (11kHz) — telling iPhone to transmit now...')
+        self.tone_utils.play_tone(self.READY_FREQ, 0.5)
+
+        record_thread.join()
+        signal = signal_container[0]
 
         import numpy as np
         max_amp = float(np.max(np.abs(signal)))
