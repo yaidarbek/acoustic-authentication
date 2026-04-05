@@ -138,7 +138,7 @@ class AcousticAuthenticator:
 
         # Send GO tone — iPhone is waiting for this before transmitting
         print('📡 Sending GO tone (11kHz) — telling iPhone to transmit now...')
-        self.tone_utils.play_tone(self.READY_FREQ, 0.5)
+        self.tone_utils.play_tone(self.READY_FREQ, 1.0)
 
         record_thread.join()
         signal = signal_container[0]
