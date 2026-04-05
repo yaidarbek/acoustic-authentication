@@ -10,6 +10,8 @@ class WorkingFSK:
         self.f1 = 9000   # Binary '1' - 9 kHz
         self.symbol_duration = 0.15  # 150ms - matches Swift FSKDecoder
         self.amplitude = 0.3  # Single amplitude used everywhere
+        self._stop = False  # interrupt flag
+        self._active_stream = None  # currently open stream
         
         self.audio = pyaudio.PyAudio()
         
@@ -57,9 +59,14 @@ class WorkingFSK:
             output=True,
             frames_per_buffer=1024
         )
-        stream.write(signal.tobytes())
-        stream.stop_stream()
-        stream.close()
+        self._active_stream = stream
+        try:
+            if not self._stop:
+                stream.write(signal.tobytes())
+        finally:
+            stream.stop_stream()
+            stream.close()
+            self._active_stream = None
 
         return len(full_data) * self.symbol_duration
     
@@ -74,18 +81,22 @@ class WorkingFSK:
             input=True,
             frames_per_buffer=1024
         )
-        
+        self._active_stream = stream
         frames = []
         total_frames = int(self.sample_rate / 1024 * duration)
         
-        for i in range(total_frames):
-            data = stream.read(1024, exception_on_overflow=False)
-            frames.append(np.frombuffer(data, dtype=np.float32))
+        try:
+            for i in range(total_frames):
+                if self._stop:
+                    break
+                data = stream.read(1024, exception_on_overflow=False)
+                frames.append(np.frombuffer(data, dtype=np.float32))
+        finally:
+            stream.stop_stream()
+            stream.close()
+            self._active_stream = None
         
-        stream.stop_stream()
-        stream.close()
-        
-        return np.concatenate(frames)
+        return np.concatenate(frames) if frames else np.zeros(0, dtype=np.float32)
     
     def goertzel_detect(self, samples, freq):
         """Goertzel algorithm for single frequency detection"""
@@ -248,7 +259,17 @@ class WorkingFSK:
         
         return test_bits == decoded
     
+    def interrupt(self):
+        """Safely interrupt any active stream — call from main thread on reset/stop"""
+        self._stop = True
+        if self._active_stream is not None:
+            try:
+                self._active_stream.stop_stream()
+            except Exception:
+                pass
+
     def cleanup(self):
+        self.interrupt()
         self.audio.terminate()
 
 def main():

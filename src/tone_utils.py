@@ -14,6 +14,8 @@ class ToneUtils:
     
     def __init__(self, sample_rate=44100):
         self.sample_rate = sample_rate
+        self._stop = False
+        self._active_stream = None
         self.audio = pyaudio.PyAudio()
         
     def generate_tone(self, frequency, duration, amplitude=0.3):
@@ -42,14 +44,6 @@ class ToneUtils:
         return tone.astype(np.float32)
     
     def play_tone(self, frequency, duration, amplitude=0.3):
-        """
-        Generate and play a tone through speakers
-        
-        Args:
-            frequency: Tone frequency in Hz
-            duration: Duration in seconds
-            amplitude: Amplitude (0.0 to 1.0)
-        """
         tone = self.generate_tone(frequency, duration, amplitude)
         
         stream = self.audio.open(
@@ -58,21 +52,16 @@ class ToneUtils:
             rate=self.sample_rate,
             output=True
         )
-        
-        stream.write(tone.tobytes())
-        stream.stop_stream()
-        stream.close()
+        self._active_stream = stream
+        try:
+            if not self._stop:
+                stream.write(tone.tobytes())
+        finally:
+            stream.stop_stream()
+            stream.close()
+            self._active_stream = None
     
     def record_audio(self, duration):
-        """
-        Record audio from microphone
-        
-        Args:
-            duration: Recording duration in seconds
-            
-        Returns:
-            numpy array of audio samples
-        """
         stream = self.audio.open(
             format=pyaudio.paFloat32,
             channels=1,
@@ -80,17 +69,23 @@ class ToneUtils:
             input=True,
             frames_per_buffer=4096
         )
-        
+        self._active_stream = stream
         frames = []
         samples_needed = int(self.sample_rate * duration)
         
-        while len(frames) * 4096 < samples_needed:
-            data = stream.read(4096, exception_on_overflow=False)
-            frames.append(np.frombuffer(data, dtype=np.float32))
+        try:
+            while len(frames) * 4096 < samples_needed:
+                if self._stop:
+                    break
+                data = stream.read(4096, exception_on_overflow=False)
+                frames.append(np.frombuffer(data, dtype=np.float32))
+        finally:
+            stream.stop_stream()
+            stream.close()
+            self._active_stream = None
         
-        stream.stop_stream()
-        stream.close()
-        
+        if not frames:
+            return np.zeros(samples_needed, dtype=np.float32)
         audio = np.concatenate(frames)
         return audio[:samples_needed]
     
@@ -140,6 +135,16 @@ class ToneUtils:
                 return True
         return False
 
+    def interrupt(self):
+        """Safely interrupt any active stream"""
+        self._stop = True
+        if self._active_stream is not None:
+            try:
+                self._active_stream.stop_stream()
+            except Exception:
+                pass
+
     def cleanup(self):
         """Clean up PyAudio resources"""
+        self.interrupt()
         self.audio.terminate()

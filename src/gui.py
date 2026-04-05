@@ -284,18 +284,30 @@ class AuthGUI:
         self.stop_btn.config(state="disabled")
         self.authenticated = False
         self.auth_running = False
-        self.stop_requested = True  # signal thread to exit, it will cleanup itself
+        self.stop_requested = True
         self._update_storage_state()
+        if self.authenticator:
+            try:
+                self.authenticator.fsk.interrupt()
+                self.authenticator.tone_utils.interrupt()
+            except Exception:
+                pass
 
     def _on_stop(self):
         """Stop the current authentication process"""
-        self.stop_requested = True  # signal thread to exit, it will cleanup itself
+        self.stop_requested = True
         self.progress.stop()
         self._set_status("idle", "Stopped by user")
         self._log("\nAuthentication stopped by user")
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.auth_running = False
+        if self.authenticator:
+            try:
+                self.authenticator.fsk.interrupt()
+                self.authenticator.tone_utils.interrupt()
+            except Exception:
+                pass
 
     def _on_test_mode(self):
         """Simulate successful authentication for testing storage"""
