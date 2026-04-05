@@ -122,7 +122,7 @@ class AcousticAuthenticator:
         """Receive 64-bit FSK response from iPhone"""
         print('=== SLOT 2: RECEIVING RESPONSE ===')
         # Open recording FIRST, then send GO tone so iPhone transmits only when we are listening
-        duration = self.RESPONSE_DURATION + 2.0  # FSK duration + small buffer
+        duration = self.RESPONSE_DURATION + 3.5  # FSK duration + GO tone (1.0s) + stream open delay (0.3s) + margin
         print(f'Recording for {duration:.1f}s...')
 
         import threading
