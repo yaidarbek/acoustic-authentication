@@ -171,7 +171,7 @@ class FSKDecoder {
 
         // Step 4: Goertzel demodulation on normalized window
         // Use center 80% of each symbol to avoid boundary drift from clock skew
-        let margin = Int(Double(samplesPerSymbol) * 0.10)  // 10% margin each side
+        let margin = Int(Double(samplesPerSymbol) * 0.15)  // 15% margin each side
         var decodedBits = ""
 
         for i in 0..<expectedBits {
