@@ -284,29 +284,18 @@ class AuthGUI:
         self.stop_btn.config(state="disabled")
         self.authenticated = False
         self.auth_running = False
-        self.stop_requested = False
+        self.stop_requested = True  # signal thread to exit, it will cleanup itself
         self._update_storage_state()
-        if self.authenticator:
-            try:
-                self.authenticator.cleanup()
-            except Exception:
-                pass
-            self.authenticator = None
 
     def _on_stop(self):
         """Stop the current authentication process"""
-        self.stop_requested = True
+        self.stop_requested = True  # signal thread to exit, it will cleanup itself
         self.progress.stop()
         self._set_status("idle", "Stopped by user")
         self._log("\nAuthentication stopped by user")
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.auth_running = False
-        if self.authenticator:
-            try:
-                self.authenticator.cleanup()
-            except Exception:
-                pass
 
     def _on_test_mode(self):
         """Simulate successful authentication for testing storage"""
@@ -326,9 +315,9 @@ class AuthGUI:
     # ------------------------------------------------------------------
 
     def _run_authentication(self):
+        t_start = time.time()  # outside try so always in scope for except
         try:
             self.authenticator = AcousticAuthenticator()
-            t_start = time.time()
 
             def ts():
                 return f"[{time.time()-t_start:5.1f}s]"
@@ -361,6 +350,9 @@ class AuthGUI:
             t = time.time()
             self.authenticator.send_sync()
             log(f"[2/3] SYNC: ACK received ({time.time()-t:.1f}s)")
+
+            if self.stop_requested:
+                return
 
             log("[2/3] CHALLENGE: sending challenge...")
             t = time.time()
@@ -415,18 +407,21 @@ class AuthGUI:
                 try:
                     if self.authenticator:
                         self.authenticator.send_result(False)
-                except:
+                except Exception:
                     pass
 
         finally:
             self.auth_running = False
+            self.stop_requested = False  # reset flag for next run
             self.root.after(0, lambda: self.start_btn.config(state="normal"))
             self.root.after(0, lambda: self.stop_btn.config(state="disabled"))
+            # always cleanup here — never from main thread
             if self.authenticator:
                 try:
                     self.authenticator.cleanup()
                 except Exception:
                     pass
+                self.authenticator = None
 
     # ------------------------------------------------------------------
     # Secure Storage Handlers
