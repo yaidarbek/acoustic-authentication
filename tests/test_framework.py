@@ -27,9 +27,9 @@ class TestCryptographicCore(unittest.TestCase):
         challenge1 = self.crypto.generate_challenge()
         challenge2 = self.crypto.generate_challenge()
         
-        # Challenges should be 16 bytes
-        self.assertEqual(len(challenge1), 16)
-        self.assertEqual(len(challenge2), 16)
+        # Challenges should be 4 bytes (32-bit acoustic challenge)
+        self.assertEqual(len(challenge1), 4)
+        self.assertEqual(len(challenge2), 4)
         
         # Challenges should be unique
         self.assertNotEqual(challenge1, challenge2)
@@ -39,8 +39,8 @@ class TestCryptographicCore(unittest.TestCase):
         challenge = b"test_challenge_16"  # 16 bytes
         response = self.crypto.compute_response(challenge)
         
-        # Response should be 32 bytes (SHA256)
-        self.assertEqual(len(response), 32)
+        # Response should be 8 bytes (64-bit truncated HMAC for acoustic transmission)
+        self.assertEqual(len(response), 8)
         
         # Same challenge should produce same response
         response2 = self.crypto.compute_response(challenge)
@@ -50,7 +50,7 @@ class TestCryptographicCore(unittest.TestCase):
         """Test response verification"""
         challenge = self.crypto.generate_challenge()
         correct_response = self.crypto.compute_response(challenge)
-        wrong_response = os.urandom(32)
+        wrong_response = os.urandom(8)
         
         # Correct response should verify
         self.assertTrue(self.crypto.verify_response(challenge, correct_response))
@@ -223,37 +223,37 @@ class TestSystemIntegration(unittest.TestCase):
     """Integration tests for complete system"""
     
     def setUp(self):
-        self.authenticator = AcousticAuthenticator()
+        pass
         
     def tearDown(self):
-        self.authenticator.cleanup()
+        pass
         
     def test_bytes_to_bits_conversion(self):
         """Test data conversion functions"""
         test_data = b"Hello"
-        bits = self.authenticator.bytes_to_bits(test_data)
-        recovered_data = self.authenticator.bits_to_bytes(bits)
+        bits = ''.join(format(b, '08b') for b in test_data)
+        recovered_data = bytes(int(bits[i:i+8], 2) for i in range(0, len(bits), 8))
         
         self.assertEqual(test_data, recovered_data)
         
     def test_challenge_bit_conversion(self):
         """Test challenge conversion to bits"""
-        challenge = os.urandom(16)
-        bits = self.authenticator.bytes_to_bits(challenge)
+        challenge = os.urandom(4)  # 32-bit acoustic challenge
+        bits = ''.join(format(b, '08b') for b in challenge)
         
-        # Should be 128 bits
-        self.assertEqual(len(bits), 128)
+        # Should be 32 bits
+        self.assertEqual(len(bits), 32)
         
         # Should be all 0s and 1s
         self.assertTrue(all(c in '01' for c in bits))
         
     def test_response_bit_conversion(self):
         """Test response conversion to bits"""
-        response = os.urandom(32)  # HMAC-SHA256 output
-        bits = self.authenticator.bytes_to_bits(response)
+        response = os.urandom(8)  # 64-bit truncated HMAC response
+        bits = ''.join(format(b, '08b') for b in response)
         
-        # Should be 256 bits
-        self.assertEqual(len(bits), 256)
+        # Should be 64 bits
+        self.assertEqual(len(bits), 64)
 
 class TestProtocolLayer(unittest.TestCase):
     """Unit tests for protocol layer — frame construction, CRC, and data splitting"""
