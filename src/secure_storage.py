@@ -3,7 +3,8 @@ import json
 from cryptography.fernet import Fernet
 from typing import Optional
 
-STORAGE_DIR = "secure_storage"
+_SRC_DIR     = os.path.dirname(os.path.abspath(__file__))
+STORAGE_DIR  = os.path.join(_SRC_DIR, "secure_storage")
 STORAGE_INDEX = os.path.join(STORAGE_DIR, "index.json")
 
 class SecureStorage:
