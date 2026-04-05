@@ -170,13 +170,13 @@ class FSKDecoder {
         let windowedDataStart = dataStart - windowStart
 
         // Step 4: Goertzel demodulation on normalized window
-        let demodStart = Date()
-        print("[FSKDecoder] Demodulating \(expectedBits) bits using Goertzel algorithm...")
+        // Use center 80% of each symbol to avoid boundary drift from clock skew
+        let margin = Int(Double(samplesPerSymbol) * 0.10)  // 10% margin each side
         var decodedBits = ""
 
         for i in 0..<expectedBits {
-            let symbolStart = windowedDataStart + i * samplesPerSymbol
-            let symbolEnd   = symbolStart + samplesPerSymbol
+            let symbolStart = windowedDataStart + i * samplesPerSymbol + margin
+            let symbolEnd   = symbolStart + samplesPerSymbol - 2 * margin
 
             guard symbolEnd <= normalized.count else {
                 print("[FSKDecoder] Ran out of samples at bit \(i)")

@@ -6,7 +6,7 @@ import time
 import json
 from typing import Optional, Tuple
 
-NONCE_LOG_FILE = 'used_nonces.json'
+NONCE_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'used_nonces.json')
 
 class CryptographicCore:
     """
@@ -151,7 +151,7 @@ class AuthenticationProtocol:
             return False
             
         # Check session timeout
-        if time.time() - self.session_start_time > self.session_timeout:
+        if self.session_start_time is None or time.time() - self.session_start_time > self.session_timeout:
             print("Session timeout")
             return False
         

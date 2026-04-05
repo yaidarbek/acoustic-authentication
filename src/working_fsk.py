@@ -212,10 +212,12 @@ class WorkingFSK:
         windowed_data_start = barker_len  # data starts after Barker within the window
 
         # Step 4: Goertzel demodulation on normalized window
+        # Use center 80% of each symbol to avoid boundary drift from clock skew
+        margin = int(samples_per_symbol * 0.10)  # 10% margin each side
         decoded_bits = ""
         for i in range(expected_bits):
-            symbol_start = windowed_data_start + i * samples_per_symbol
-            symbol_end = symbol_start + samples_per_symbol
+            symbol_start = windowed_data_start + i * samples_per_symbol + margin
+            symbol_end = symbol_start + samples_per_symbol - 2 * margin
 
             if symbol_end <= len(window):
                 symbol_data = window[symbol_start:symbol_end]
