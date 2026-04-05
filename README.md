@@ -100,6 +100,44 @@ cd src
 python iphone_sim.py
 ```
 
+## Running the iOS App (iPhone / Prover)
+
+### Requirements
+- macOS with Xcode 14+
+- iPhone with iOS 15.0 or later
+- Apple Developer account (free tier is sufficient)
+
+### Steps
+
+**1. Open the project in Xcode**
+```
+open Ios_FYP/Ios_FYP.xcodeproj
+```
+
+**2. Configure signing**
+1. Click `Ios_FYP` (blue icon) in the Xcode left sidebar
+2. Select `Ios_FYP` under TARGETS
+3. Go to the `Signing & Capabilities` tab
+4. Enable `Automatically manage signing`
+5. Select your Apple ID under Team
+
+**3. Build and run on iPhone**
+1. Connect iPhone via USB and unlock it
+2. Select your iPhone from the device dropdown in the Xcode toolbar
+3. Press `⌘+R` or click the Run button
+4. If prompted on iPhone: `Settings → General → VPN & Device Management → Trust`
+5. Allow microphone access when the app first launches
+
+### Usage
+1. Start the laptop verifier first: `python src/gui.py`
+2. Tap `Authenticate` on the iPhone app
+3. Place devices within ~1 metre of each other
+4. The app handles the full 4-phase protocol automatically
+
+> For more detail see `Ios_FYP/README.md`
+
+---
+
 ## Running Tests
 
 ```
