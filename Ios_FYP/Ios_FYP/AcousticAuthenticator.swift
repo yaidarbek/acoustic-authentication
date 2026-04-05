@@ -188,6 +188,10 @@ class AcousticAuthenticator: ObservableObject {
             signal.append(contentsOf: generateTone(frequency: freq, duration: fskDecoder.symbolDuration))
         }
 
+        // 0.5s silence padding — protects last FSK symbols from audio engine buffer cutoff
+        let silenceSamples = Int(fskDecoder.sampleRate * 0.5)
+        signal.append(contentsOf: [Float](repeating: 0, count: silenceSamples))
+
         try await playSignal(signal)
     }
 
