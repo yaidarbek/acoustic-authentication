@@ -143,9 +143,8 @@ class WorkingFSK:
             ref_signal = np.concatenate([ref_signal, self.generate_tone(freq, self.symbol_duration)])
         reference = ref_signal
 
-        # Frame always starts near beginning (guard=0.2s + small offset)
-        # Limit search to first 3s to avoid false peaks in noise
-        search_end    = min(len(signal) - len(reference), int(self.sample_rate * 3.0))
+        # Limit search to first 15s to cover worst-case ACK + sleep delay
+        search_end    = min(len(signal) - len(reference), int(self.sample_rate * 15.0))
         search_signal = signal[:search_end + len(reference)]
 
         # Step 1: Coarse search on consistently downsampled signal
@@ -185,25 +184,29 @@ class WorkingFSK:
         # Step 1: Bandpass filter — remove out-of-band noise
         signal = self.bandpass_filter(signal)
 
-        # Step 2: AGC — normalize amplitude for consistent Goertzel detection
-        signal = self.apply_agc(signal)
-
-        # Step 3: Barker-7 sync — find frame start via cross-correlation
-        # Barker preamble is 7 symbols, skip past it to reach data
+        # Step 2: Barker-7 sync — find frame start on filtered signal (before AGC)
+        # AGC on full buffer would normalize noise/silence, not the FSK signal
         barker_len = 7 * samples_per_symbol
         best_start = self.barker_sync(signal)
         data_start = best_start + barker_len
 
         print(f"Barker sync: frame start at sample {best_start}, data at {data_start}")
 
-        # Step 4: Goertzel demodulation
+        # Step 3: Windowed AGC — normalize only the detected signal window
+        # Mirrors FSKDecoder.swift decodeSignal() windowed AGC approach
+        window_end = min(len(signal), data_start + expected_bits * samples_per_symbol)
+        window = signal[best_start:window_end]
+        window = self.apply_agc(window)
+        windowed_data_start = barker_len  # data starts after Barker within the window
+
+        # Step 4: Goertzel demodulation on normalized window
         decoded_bits = ""
         for i in range(expected_bits):
-            symbol_start = data_start + i * samples_per_symbol
+            symbol_start = windowed_data_start + i * samples_per_symbol
             symbol_end = symbol_start + samples_per_symbol
 
-            if symbol_end <= len(signal):
-                symbol_data = signal[symbol_start:symbol_end]
+            if symbol_end <= len(window):
+                symbol_data = window[symbol_start:symbol_end]
                 power_f0 = self.goertzel_detect(symbol_data, self.f0)
                 power_f1 = self.goertzel_detect(symbol_data, self.f1)
 

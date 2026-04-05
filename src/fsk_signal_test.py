@@ -120,8 +120,8 @@ class FSKEngine:
         if len(signal) < len(reference):
             return 0
 
-        # Limit search to first 3s to avoid false peaks in noise
-        search_end    = min(len(signal) - len(reference), int(self.sample_rate * 3.0))
+        # Limit search to first 15s to cover worst-case ACK + sleep delay
+        search_end    = min(len(signal) - len(reference), int(self.sample_rate * 15.0))
         search_signal = signal[:search_end + len(reference)]
 
         # Step 1: Coarse search on consistently downsampled signal
@@ -492,14 +492,18 @@ def run_all_tests():
     results['sync_presilence_1.0s'] = run_test_with_presilence(fsk, 'sync_pre_1.0s', SYNC_PATTERN, 1.0)
     results['sync_presilence_1.5s'] = run_test_with_presilence(fsk, 'sync_pre_1.5s', SYNC_PATTERN, 1.5)
     results['sync_presilence_2.0s'] = run_test_with_presilence(fsk, 'sync_pre_2.0s', SYNC_PATTERN, 2.0)
-    # Exact protocol timing: 1.6s +- 0.3s
+    results['sync_presilence_3.0s'] = run_test_with_presilence(fsk, 'sync_pre_3.0s', SYNC_PATTERN, 3.0)
+    # Exact protocol timing: 1.6s +- 0.3s, extended to cover laptopAckWindow=3.0s
     results['sync_exact_1.3s']      = run_test_with_presilence(fsk, 'sync_exact_1.3s', SYNC_PATTERN, 1.3)
     results['sync_exact_1.6s']      = run_test_with_presilence(fsk, 'sync_exact_1.6s', SYNC_PATTERN, 1.6)
     results['sync_exact_1.9s']      = run_test_with_presilence(fsk, 'sync_exact_1.9s', SYNC_PATTERN, 1.9)
+    results['sync_exact_2.5s']      = run_test_with_presilence(fsk, 'sync_exact_2.5s', SYNC_PATTERN, 2.5)
+    results['sync_exact_3.0s']      = run_test_with_presilence(fsk, 'sync_exact_3.0s', SYNC_PATTERN, 3.0)
     # With noise
     results['sync_exact_1.3s_20dB'] = run_test_with_presilence(fsk, 'sync_exact_1.3s_20dB', SYNC_PATTERN, 1.3, snr_db=20)
     results['sync_exact_1.6s_20dB'] = run_test_with_presilence(fsk, 'sync_exact_1.6s_20dB', SYNC_PATTERN, 1.6, snr_db=20)
     results['sync_exact_1.9s_20dB'] = run_test_with_presilence(fsk, 'sync_exact_1.9s_20dB', SYNC_PATTERN, 1.9, snr_db=20)
+    results['sync_exact_3.0s_20dB'] = run_test_with_presilence(fsk, 'sync_exact_3.0s_20dB', SYNC_PATTERN, 3.0, snr_db=20)
 
     # Challenge with pre-silence + noise
     md('\n### 5b. Challenge with pre-silence + noise')
@@ -507,9 +511,11 @@ def run_all_tests():
     results['challenge_exact_1.3s']      = run_test_with_presilence(fsk, 'challenge_exact_1.3s',      challenge3_bits, 1.3)
     results['challenge_exact_1.6s']      = run_test_with_presilence(fsk, 'challenge_exact_1.6s',      challenge3_bits, 1.6)
     results['challenge_exact_1.9s']      = run_test_with_presilence(fsk, 'challenge_exact_1.9s',      challenge3_bits, 1.9)
+    results['challenge_exact_3.0s']      = run_test_with_presilence(fsk, 'challenge_exact_3.0s',      challenge3_bits, 3.0)
     results['challenge_exact_1.3s_20dB'] = run_test_with_presilence(fsk, 'challenge_exact_1.3s_20dB', challenge3_bits, 1.3, snr_db=20)
     results['challenge_exact_1.6s_20dB'] = run_test_with_presilence(fsk, 'challenge_exact_1.6s_20dB', challenge3_bits, 1.6, snr_db=20)
     results['challenge_exact_1.9s_20dB'] = run_test_with_presilence(fsk, 'challenge_exact_1.9s_20dB', challenge3_bits, 1.9, snr_db=20)
+    results['challenge_exact_3.0s_20dB'] = run_test_with_presilence(fsk, 'challenge_exact_3.0s_20dB', challenge3_bits, 3.0, snr_db=20)
 
     # Response with pre-silence + noise
     md('\n### 5c. Response with pre-silence + noise')
@@ -517,9 +523,11 @@ def run_all_tests():
     results['response_exact_0.0s']      = run_test_with_presilence(fsk, 'response_exact_0.0s',      response3_bits, 0.0)
     results['response_exact_0.5s']      = run_test_with_presilence(fsk, 'response_exact_0.5s',      response3_bits, 0.5)
     results['response_exact_1.0s']      = run_test_with_presilence(fsk, 'response_exact_1.0s',      response3_bits, 1.0)
+    results['response_exact_2.0s']      = run_test_with_presilence(fsk, 'response_exact_2.0s',      response3_bits, 2.0)
     results['response_exact_0.0s_20dB'] = run_test_with_presilence(fsk, 'response_exact_0.0s_20dB', response3_bits, 0.0, snr_db=20)
     results['response_exact_0.5s_20dB'] = run_test_with_presilence(fsk, 'response_exact_0.5s_20dB', response3_bits, 0.5, snr_db=20)
     results['response_exact_1.0s_20dB'] = run_test_with_presilence(fsk, 'response_exact_1.0s_20dB', response3_bits, 1.0, snr_db=20)
+    results['response_exact_2.0s_20dB'] = run_test_with_presilence(fsk, 'response_exact_2.0s_20dB', response3_bits, 2.0, snr_db=20)
 
     #  Test 6: Decode timing breakdown
     md('\n## 6. Decode Timing Breakdown')
@@ -532,6 +540,44 @@ def run_all_tests():
     results['timing_sync_1.6s_20dB']     = run_test_timing(fsk, 'sync_1.6s_20dB',             SYNC_PATTERN,    1.6, snr_db=20)
     results['timing_challenge_1.6s_20dB']= run_test_timing(fsk, 'challenge_1.6s_20dB',        challenge3_bits, 1.6, snr_db=20)
     results['timing_response_0.5s_20dB'] = run_test_timing(fsk, 'response_0.5s_20dB',         response3_bits,  0.5, snr_db=20)
+
+    #  Test 7: Barker sync position accuracy
+    md('\n## 7. Barker Sync Position Accuracy')
+    md('Verifies Barker sync finds the frame at the CORRECT position, not just decodes correctly.')
+    md('A wrong position with lucky decoding would still pass Tests 1-6 but fail here.')
+    md('Tolerance: ±1 symbol (~6615 samples) from expected frame start.')
+
+    challenge4      = crypto.generate_challenge()
+    challenge4_bits = ''.join(format(b, '08b') for b in challenge4)
+    response4       = crypto.compute_response(challenge4)
+    response4_bits  = ''.join(format(b, '08b') for b in response4)
+    tolerance       = fsk.samples_per_symbol  # ±1 symbol
+
+    def run_sync_position_test(name: str, bits: str, presilence_s: float, snr_db: float = None) -> bool:
+        signal     = fsk.encode(bits)
+        presilence = np.zeros(int(fsk.sample_rate * presilence_s), dtype=np.float32)
+        signal     = np.concatenate([presilence, signal])
+        if snr_db is not None:
+            signal = fsk.add_noise(signal, snr_db)
+        filtered   = fsk.bandpass_filter(signal)
+        frame_start = fsk.barker_sync(filtered)
+        expected    = int(fsk.sample_rate * (presilence_s + fsk.guard_duration))
+        offset      = abs(frame_start - expected)
+        passed      = offset <= tolerance
+        md(f'- `{name}`: expected={expected} found={frame_start} offset={offset} samples ({'PASS' if passed else 'FAIL — sync missed signal'})')
+        return passed
+
+    md('\n**Challenge (32 bits) sync position:**')
+    for ps, snr in [(0.5, None), (1.0, None), (1.6, None), (2.5, None), (3.0, None),
+                    (1.6, 20),   (3.0, 20),   (1.6, 10),   (3.0, 10)]:
+        label = f'challenge_{ps}s' + (f'_{snr}dB' if snr else '_clean')
+        results[f'sync_pos_{label}'] = run_sync_position_test(label, challenge4_bits, ps, snr)
+
+    md('\n**Response (64 bits) sync position:**')
+    for ps, snr in [(0.0, None), (0.5, None), (1.0, None), (2.0, None),
+                    (0.5, 20),   (2.0, 20),   (0.5, 10),   (2.0, 10)]:
+        label = f'response_{ps}s' + (f'_{snr}dB' if snr else '_clean')
+        results[f'sync_pos_{label}'] = run_sync_position_test(label, response4_bits, ps, snr)
 
     #  Summary 
     md('\n## Summary')

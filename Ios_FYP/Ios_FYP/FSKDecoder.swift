@@ -75,8 +75,8 @@ class FSKDecoder {
         }
         guard signal.count >= reference.count else { return 0 }
 
-        // Limit search to first 3s
-        let searchEnd   = min(signal.count - reference.count, Int(sampleRate * 3.0))
+        // Limit search to first 15s to cover worst-case ACK + sleep delay
+        let searchEnd   = min(signal.count - reference.count, Int(sampleRate * 15.0))
         let searchSlice = Array(signal[0..<(searchEnd + reference.count)])
 
         // Step 1: Coarse search on consistently downsampled signal

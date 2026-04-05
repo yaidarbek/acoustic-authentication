@@ -36,7 +36,7 @@ class AcousticAuthenticator: ObservableObject {
     private let ackFreq:   Double = 13000.0  // 13 kHz - ACK to laptop
 
     // Laptop ACK listen window — iPhone recording must cover this worst-case delay
-    private let laptopAckWindow = 5.0
+    private let laptopAckWindow = 3.0
 
     // MARK: - Public API
 
