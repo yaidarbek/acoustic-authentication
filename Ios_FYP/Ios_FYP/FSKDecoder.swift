@@ -195,11 +195,9 @@ class FSKDecoder {
             }
         }
 
-        let demodTime  = Date().timeIntervalSince(demodStart)
         let totalTime  = Date().timeIntervalSince(startTime)
-        let demodTimeStr = String(format: "%.3f", demodTime)
         let totalTimeStr = String(format: "%.3f", totalTime)
-        print("[FSKDecoder] Demodulation complete in \(demodTimeStr)s")
+        print("[FSKDecoder] Demodulation complete")
         print("[FSKDecoder] Total decoding time: \(totalTimeStr)s")
         print("[FSKDecoder] Decoded \(decodedBits.count) bits")
         print("[FSKDecoder] First 32 bits: \(decodedBits.prefix(32))")
